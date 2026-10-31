@@ -23,7 +23,7 @@ function emptyCase() {
     school: false, rescue: false, restCm: '', notes: ''
   };
 }
-const S = { db: null, cur: emptyCase(), editId: null, savedId: null, dirty: true, records: [], map: null, marker: null, mapBig: false,
+const S = { dbg: null, ocrErr: null, db: null, cur: emptyCase(), editId: null, savedId: null, dirty: true, records: [], map: null, marker: null, mapBig: false,
             settings: { aiOn: false, aiKey: '', aiModel: 'claude-sonnet-5-5', aiAuto: false }, ocr: null, ocrBusy: 0 };
 
 /* ---------- Hilfen ---------- */
@@ -183,6 +183,7 @@ async function addPhoto(file) {
       // Mediathek-Foto ohne Standort und nicht gerade erst aufgenommen: aktuelle GPS-Position wäre FALSCH -> manuell setzen
       S.cur.coords = null; S.cur.locSource = null; S.cur.accuracy = null; S.cur.address = ''; S.cur.road = ''; renderLocation();
       toast('Foto ohne Standort – bitte Ort auf der Karte setzen (siehe Hinweis „Standort behalten")', 4500);
+      if (!S.mapBig) $('btnMapSize').click();
       locateHint();
     } else if (!S.cur.coords || file.__fromGallery) locate();
   }
@@ -236,35 +237,35 @@ function setOcrStatus(kind, text = '') {
 }
 
 /* ---------- Kennzeichen-OCR (Tesseract.js, lokal gehostet, Lazy-Load) ---------- */
-const PLATE_RE = {
-  three: /^([A-ZÄÖÜ]{1,3})$/, two: /^[A-Z]{1,2}$/, digits: /^\d{1,4}[EH]?$/
-};
+const TO_L = { 0: 'O', 1: 'I', 5: 'S', 8: 'B', 2: 'Z', 6: 'G' }, TO_D = { O: 0, Q: 0, D: 0, I: 1, L: 1, S: 5, B: 8, Z: 2, G: 6 };
+const fixL = (t) => t.replace(/[0-9]/g, (c) => TO_L[c] || c);
+const fixD = (t) => t.replace(/[A-Z]/g, (c) => (TO_D[c] !== undefined ? TO_D[c] : c));
 function normTok(t) { return t.toUpperCase().replace(/[^A-ZÄÖÜ0-9]/g, ''); }
 function plateCandidates(words) {
-  // words: [{text, conf, bbox:{x0,y0,x1,y1}}]
+  // words: [{text, conf, bbox:{x0,y0,x1,y1}}] -> Kennzeichen-Kandidaten (Teilfolgen je Zeile, Rauschen dazwischen erlaubt)
   const toks = words.map((w) => ({ t: normTok(w.text), conf: w.conf, b: w.bbox })).filter((w) => w.t.length > 0);
-  toks.sort((a, b) => a.b.y0 - b.b.y0);
-  const out = [];
-  for (let i = 0; i < toks.length; i++) {
-    for (let len = 1; len <= 3; len++) {
-      const seq = [toks[i]];
-      // folgende Tokens auf gleicher Zeile, rechts davon
-      let last = toks[i];
-      for (let k = 0; k < toks.length && seq.length < len; k++) {
-        const c = toks[k]; if (seq.includes(c)) continue;
-        const h = Math.max(last.b.y1 - last.b.y0, 8), cy = (c.b.y0 + c.b.y1) / 2, ly = (last.b.y0 + last.b.y1) / 2;
-        if (Math.abs(cy - ly) < h * 0.6 && c.b.x0 >= last.b.x1 - h * 0.3 && c.b.x0 - last.b.x1 < h * 2.2) { seq.push(c); last = c; k = -1; }
-      }
-      if (seq.length !== len) continue;
-      const p = parsePlate(seq.map((s) => s.t));
-      if (!p) continue;
-      const conf = seq.reduce((s, x) => s + x.conf, 0) / seq.length;
-      const x0 = Math.min(...seq.map((s) => s.b.x0)), y0 = Math.min(...seq.map((s) => s.b.y0)), x1 = Math.max(...seq.map((s) => s.b.x1)), y1 = Math.max(...seq.map((s) => s.b.y1));
-      out.push({ text: p, conf, box: { x0, y0, x1, y1 }, area: (x1 - x0) * (y1 - y0) });
-    }
+  toks.sort((a, b) => (a.b.y0 + a.b.y1) - (b.b.y0 + b.b.y1));
+  const lines = [];
+  for (const t of toks) {
+    const cy = (t.b.y0 + t.b.y1) / 2, h = Math.max(t.b.y1 - t.b.y0, 8);
+    const ln = lines.find((l) => Math.abs(l.cy - cy) < h * 0.7);
+    if (ln) { ln.t.push(t); ln.cy = (ln.cy * (ln.t.length - 1) + cy) / ln.t.length; } else lines.push({ cy, t: [t] });
   }
-  // Duplikate (überlappend) -> bestes behalten
-  out.sort((a, b) => b.conf * Math.sqrt(b.area) - a.conf * Math.sqrt(a.area));
+  const out = [];
+  for (const ln of lines) {
+    const row = ln.t.sort((a, b) => a.b.x0 - b.b.x0).slice(0, 10), n = row.length;
+    const tryseq = (seq) => {
+      const p = parsePlate(seq.map((q) => q.t)); if (!p) return;
+      const skip = row.indexOf(seq[seq.length - 1]) - row.indexOf(seq[0]) + 1 - seq.length;
+      const hgt = Math.max(...seq.map((q) => q.b.y1 - q.b.y0), 8);
+      for (let i = 1; i < seq.length; i++) if (seq[i].b.x0 - seq[i - 1].b.x1 > hgt * 3.5) return; // zu weit auseinander
+      const x0 = Math.min(...seq.map((q) => q.b.x0)), y0 = Math.min(...seq.map((q) => q.b.y0)), x1 = Math.max(...seq.map((q) => q.b.x1)), y1 = Math.max(...seq.map((q) => q.b.y1));
+      out.push({ text: p, conf: seq.reduce((a, q) => a + q.conf, 0) / seq.length, box: { x0, y0, x1, y1 }, area: (x1 - x0) * (y1 - y0), len: seq.length, skip });
+    };
+    for (let i = 0; i < n; i++) { tryseq([row[i]]);
+      for (let j = i + 1; j < n; j++) { tryseq([row[i], row[j]]); for (let k = j + 1; k < n; k++) tryseq([row[i], row[j], row[k]]); } }
+  }
+  out.sort((a, b) => (a.skip - b.skip) || (b.len - a.len) || (b.conf * Math.sqrt(b.area) - a.conf * Math.sqrt(a.area)));
   const kept = [];
   for (const c of out) if (!kept.some((k) => overlap(k.box, c.box) > 0.3)) kept.push(c);
   return kept;
@@ -274,20 +275,24 @@ function overlap(a, b) {
   const inter = ix * iy, ua = (a.x1 - a.x0) * (a.y1 - a.y0), ub = (b.x1 - b.x0) * (b.y1 - b.y0);
   return inter / Math.min(ua, ub || 1);
 }
-/* Tokens -> „HD AM 2330"; gibt null zurück, wenn kein deutsches Kennzeichenmuster */
+/* Tokens -> „HD AM 2330"; null, wenn kein deutsches Kennzeichenmuster. OCR-Verwechslungen (0/O, 1/I, 5/S, 8/B …) werden je Position korrigiert. */
 function parsePlate(t) {
-  const L = (s) => /^[A-ZÄÖÜ]+$/.test(s), D = (s) => /^\d{1,4}[EH]?$/.test(s) && /\d/.test(s);
-  if (t.length === 3 && PLATE_RE.three.test(t[0]) && PLATE_RE.two.test(t[1]) && D(t[2])) return `${t[0]} ${t[1]} ${t[2]}`;
-  if (t.length === 2 && PLATE_RE.three.test(t[0])) {
-    const m = t[1].match(/^([A-Z]{1,2})(\d{1,4}[EH]?)$/); if (m) return `${t[0]} ${m[1]} ${m[2]}`;
+  const dig = (x) => { const m = fixD(x).match(/^(\d{1,4})([EH]?)$/); return m ? m[1] + m[2] : null; };
+  const let1 = (x, max) => { const y = fixL(x); return new RegExp('^[A-ZÄÖÜ]{1,' + max + '}$').test(y) ? y : null; };
+  let a, b, c;
+  if (t.length === 3) { a = let1(t[0], 3); b = let1(t[1], 2); c = dig(t[2]); if (a && b && c) return `${a} ${b} ${c}`; }
+  if (t.length === 2) {
+    a = let1(t[0], 3);
+    if (a) { const m = t[1].match(/^([A-Z0-9]{1,3}?)([0-9OIlSBZ]{1,4}[EH]?)$/); if (m) { b = let1(m[1], 2); c = dig(m[2]); if (b && c && /\d/.test(c)) return `${a} ${b} ${c}`; } }
+    const m2 = t[0].match(/^([A-ZÄÖÜ]{3,5})$/); c = dig(t[1]);
+    if (m2 && c && /^\d/.test(c)) { const l = m2[1], cut = l.length >= 4 ? 2 : 2; return `${l.slice(0, cut)} ${l.slice(cut)} ${c}`; }
   }
   if (t.length === 1) {
-    const m = t[0].match(/^([A-ZÄÖÜ]{2,5})(\d{1,4}[EH]?)$/);
-    if (m && m[1].length >= 3) { const l = m[1]; const cut = l.length === 3 ? 2 : l.length === 4 ? 2 : 3; return `${l.slice(0, cut)} ${l.slice(cut)} ${m[2]}`; }
+    const m = t[0].match(/^([A-ZÄÖÜ]{3,5})([0-9OIS]{1,4}[EH]?)$/); c = m && dig(m[2]);
+    if (m && c && /^\d/.test(c)) { const l = m[1]; return `${l.slice(0, 2)} ${l.slice(2)} ${c}`; }
   }
   return null;
 }
-
 /* --- Kennzeichen lokalisieren (klassische Bildverarbeitung) + Region-OCR ---
  * Vollbild-OCR findet Kennzeichen in Straßenszenen kaum zuverlässig. Daher: helle Rechtecke mit dichten
  * senkrechten Kanten (= Schriftband) suchen, nur diese Ausschnitte lesen und strikt gegen das deutsche
@@ -345,17 +350,40 @@ function enhanceCanvas(cv) {
 }
 async function ocrPlatesIn(canvas, maxRegions = 8) {
   const regs = findPlateRegions(canvas).slice(0, maxRegions), found = [], w = await getOcr();
+  S.dbg = { regions: regs.length, reads: [], tiles: 0 };
   for (const r of regs) {
     const px = r.w * 0.2, py = r.h * 0.55, sx = Math.max(0, r.x - px), sy = Math.max(0, r.y - py), sw = Math.min(canvas.width - sx, r.w + 2 * px), sh = Math.min(canvas.height - sy, r.h + 2 * py);
     const k = Math.max(0.5, Math.min(4, 56 / r.h));
     const cr = document.createElement('canvas'); cr.width = Math.max(8, Math.round(sw * k)); cr.height = Math.max(8, Math.round(sh * k));
     const g = cr.getContext('2d', { willReadFrequently: true }); g.imageSmoothingQuality = 'high'; g.fillStyle = '#fff'; g.fillRect(0, 0, cr.width, cr.height);
     g.drawImage(canvas, sx, sy, sw, sh, 0, 0, cr.width, cr.height); enhanceCanvas(cr);
-    const { data } = await w.recognize(cr);
+    const { data } = await w.recognize(cr); S.dbg.reads.push((data.text || '').trim().replace(/\s+/g, ' '));
     for (const cand of plateCandidates((data.words || []).map((q) => ({ text: q.text, conf: Math.max(q.confidence, data.confidence || 0), bbox: q.bbox })))) {
       found.push({ text: cand.text, conf: cand.conf, box: { x0: sx + cand.box.x0 / k, y0: sy + cand.box.y0 / k, x1: sx + cand.box.x1 / k, y1: sy + cand.box.y1 / k } });
     }
   }
+  found.sort((a, b) => b.conf - a.conf); const kept = [];
+  for (const f of found) if (!kept.some((q) => overlap(q.box, f.box) > 0.3)) kept.push(f);
+  return kept;
+}
+
+
+/* Fallback, wenn die Lokalisierung nichts findet: überlappende Kacheln, hochskaliert, Mehrzeilen-Modus */
+async function ocrTiles(canvas) {
+  const w = await getOcr(), found = []; await w.setParameters({ tessedit_pageseg_mode: '11' });
+  try {
+    const cols = 3, rows = 2, tw = canvas.width / cols * 1.5, th = canvas.height / rows * 1.4;
+    for (let r = 0; r < rows; r++) for (let c = 0; c < cols; c++) {
+      const sx = Math.min(canvas.width - tw, c * (canvas.width - tw) / (cols - 1)), sy = Math.min(canvas.height - th, r * (canvas.height - th) / Math.max(1, rows - 1));
+      const k = Math.min(3, 1400 / tw), cr = document.createElement('canvas'); cr.width = Math.round(tw * k); cr.height = Math.round(th * k);
+      const g = cr.getContext('2d', { willReadFrequently: true }); g.imageSmoothingQuality = 'high'; g.drawImage(canvas, sx, sy, tw, th, 0, 0, cr.width, cr.height); enhanceCanvas(cr);
+      setOcrStatus('busy', `Suche Kennzeichen (Kachel ${r * cols + c + 1}/${cols * rows}) …`); S.dbg.tiles++;
+      const { data } = await w.recognize(cr);
+      for (const cand of plateCandidates((data.words || []).map((q) => ({ text: q.text, conf: Math.max(q.confidence, data.confidence || 0), bbox: q.bbox })))) {
+        found.push({ text: cand.text, conf: cand.conf, box: { x0: sx + cand.box.x0 / k, y0: sy + cand.box.y0 / k, x1: sx + cand.box.x1 / k, y1: sy + cand.box.y1 / k } });
+      }
+    }
+  } finally { await w.setParameters({ tessedit_pageseg_mode: '7' }); }
   found.sort((a, b) => b.conf - a.conf); const kept = [];
   for (const f of found) if (!kept.some((q) => overlap(q.box, f.box) > 0.3)) kept.push(f);
   return kept;
@@ -374,15 +402,17 @@ async function getOcr() {
 async function runOcr(photo) {
   S.ocrBusy++; setOcrStatus('busy', 'Suche Kennzeichen …');
   try {
-    const cands = await ocrPlatesIn(photo.orig);
+    let cands = await ocrPlatesIn(photo.orig);
+    if (!cands.length) cands = await ocrTiles(photo.orig);
     if (cands.length) {
       for (const c of cands) photo.boxes.push(padBox(c.box, photo.orig, 0.15, 0.25));
       const main = cands[0].text;
       if (!S.cur.plate) { S.cur.plate = main; S.cur.plateSource = 'ocr'; $('inPlate').value = main; renderPlateBadge(); }
       setOcrStatus('ok', `${cands.length} Kennzeichen erkannt & geschwärzt – bitte prüfen`);
     } else setOcrStatus('warn', 'Kein Kennzeichen erkannt – tippe aufs Kennzeichen');
+    S.ocrErr = null;
   } catch (e) {
-    console.warn('OCR fehlgeschlagen', e); setOcrStatus('warn', 'OCR nicht verfügbar – tippe aufs Kennzeichen, Text von Hand');
+    console.warn('OCR fehlgeschlagen', e); S.ocrErr = String((e && e.message) || e); setOcrStatus('warn', 'OCR-Fehler: ' + S.ocrErr.slice(0, 80) + ' (Einstellungen → OCR-Test)');
   } finally {
     S.ocrBusy--; renderPhoto(); renderThumbs(); markDirty();
     setTimeout(() => { if (!S.ocrBusy) $('ocrStatus').classList.add('hidden'); }, 6000);
@@ -698,6 +728,24 @@ async function openSettings() {
 }
 function applyAiVisibility() { $('btnAI').classList.toggle('hidden', !(S.settings.aiOn && S.settings.aiKey)); }
 
+
+async function ocrSelfTest() {
+  const out = $('sOcrOut'); const log = (m) => { out.textContent += m + '\n'; }; out.textContent = '';
+  const base = new URL('vendor/tess/', document.baseURI).href;
+  for (const f of ['tesseract.min.js', 'worker.min.js', 'tesseract-core-simd-lstm.wasm.js', 'tesseract-core-lstm.wasm.js', 'lang/deu.traineddata.gz']) {
+    try { const r = await fetch(base + f, { method: 'GET', cache: 'no-store' }); const n = (await r.arrayBuffer()).byteLength; log(`${r.ok ? 'OK ' : 'FEHLER'} ${r.status} ${f} (${(n / 1048576).toFixed(1)} MB)`); } catch (e) { log(`FEHLER ${f}: ${e.message}`); }
+  }
+  log('WebAssembly: ' + (typeof WebAssembly !== 'undefined' ? 'ja' : 'NEIN'));
+  try {
+    const t0 = performance.now(); await getOcr(); log(`Engine geladen (${Math.round(performance.now() - t0)} ms)`);
+    const c = document.createElement('canvas'); c.width = 520; c.height = 130; const g = c.getContext('2d');
+    g.fillStyle = '#fff'; g.fillRect(0, 0, 520, 130); g.fillStyle = '#003399'; g.fillRect(0, 0, 60, 130); g.fillStyle = '#000'; g.font = 'bold 72px sans-serif'; g.textBaseline = 'middle'; g.fillText('HD  AM 2330', 80, 68);
+    const w = await getOcr(); const { data } = await w.recognize(c); log('Testkennzeichen gelesen als: "' + data.text.trim() + '" → ' + (plateCandidates((data.words || []).map((q) => ({ text: q.text, conf: 90, bbox: q.bbox })))[0]?.text || 'KEIN MUSTER'));
+  } catch (e) { log('ENGINE-FEHLER: ' + (e && e.message || e)); }
+  if (S.dbg) log(`Letzte Foto-Suche: ${S.dbg.regions} Region(en), ${S.dbg.tiles} Kachel(n). Gelesen: ${S.dbg.reads.map((x) => '"' + x + '"').join(' | ') || '–'}`);
+  if (S.ocrErr) log('Letzter Fehler: ' + S.ocrErr);
+}
+
 /* ---------- Start ---------- */
 async function init() {
   loadSettings(); ensureBrandList(); applyAiVisibility();
@@ -770,6 +818,7 @@ async function init() {
     S.settings.aiOn = $('sAiOn').checked; S.settings.aiKey = $('sAiKey').value.trim(); S.settings.aiModel = $('sAiModel').value.trim() || 'claude-sonnet-5-5'; S.settings.aiAuto = $('sAiAuto').checked;
     saveSettings(); applyAiVisibility(); $('settings').classList.add('hidden');
   };
+  $('sOcrTest').onclick = ocrSelfTest;
   $('sPersist').onclick = async () => { try { const ok = await navigator.storage.persist(); toast(ok ? 'Speicher ist jetzt geschützt' : 'Vom Browser nicht gewährt (App zum Home-Bildschirm hinzufügen)', 4000); openSettings(); } catch (e) { toast('Nicht unterstützt'); } };
   $('sWipe').onclick = async () => { if (confirm('ALLE gespeicherten Fälle löschen? Das ist nicht rückgängig zu machen.') && confirm('Wirklich alle löschen? (Backup vorhanden?)')) { await dbClear(); toast('Alles gelöscht'); refreshStats(); } };
 

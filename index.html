@@ -73,7 +73,7 @@
         <details class="text-[11px] text-slate-400">
           <summary class="cursor-pointer py-1"><i class="fa-solid fa-circle-info text-cyan-400 mr-1"></i>Foto-Standort aus der Mediathek behalten</summary>
           <div class="mt-1 space-y-1 leading-relaxed">
-            <p><b class="text-slate-200">iPhone:</b> iOS entfernt den Standort standardmäßig. Im Auswahlfenster unten rechts auf <b>„Optionen"</b> tippen und <b>„Standort"</b> einschalten – oder Foto über <b>„Durchsuchen" (Dateien)</b> wählen.</p>
+            <p><b class="text-slate-200">iPhone:</b> iOS entfernt den Standort standardmäßig. Im Auswahlfenster unten auf <b>„Optionen"</b> tippen und <b>„Standort"</b> einschalten. Fehlt „Optionen": in Fotos das Foto teilen → <b>Optionen → Alle Fotodaten</b> → <b>In Dateien sichern</b>, dann hier über <b>Mediathek → Durchsuchen</b> wählen.</p>
             <p>Fehlt der Standort trotzdem, setzt du ihn per Tipp auf die Karte. Die Aufnahmezeit aus dem Foto wird weiterhin übernommen.</p>
           </div>
         </details>
@@ -292,6 +292,12 @@
         <input id="sAiKey" class="inp font-mono" type="password" placeholder="API-Schlüssel (sk-ant-…)" autocomplete="off">
         <input id="sAiModel" class="inp font-mono" placeholder="Modell, z. B. claude-sonnet-5-5">
         <label class="tog"><span>Nach jedem Foto automatisch</span><input id="sAiAuto" type="checkbox" class="w-5 h-5 accent-emerald-500"></label>
+      </div>
+
+      <div class="space-y-2 border-t border-slate-800 pt-3">
+        <p class="text-xs font-semibold">Kennzeichen-Erkennung</p>
+        <button id="sOcrTest" class="btn w-full py-3 text-xs"><i class="fa-solid fa-stethoscope text-emerald-400"></i>OCR-Test starten</button>
+        <pre id="sOcrOut" class="text-[10px] text-slate-300 whitespace-pre-wrap break-words bg-slate-950 border border-slate-800 rounded-lg p-2 select-text"></pre>
       </div>
 
       <div class="space-y-2 border-t border-slate-800 pt-3">
