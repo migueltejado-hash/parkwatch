@@ -1,0 +1,37 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer components {
+  .card { @apply bg-slate-900 border border-slate-800 rounded-2xl p-3 space-y-2.5 shadow-sm; }
+  .lbl  { @apply text-[11px] font-medium text-slate-400; }
+  .inp  { @apply w-full bg-slate-950 border border-slate-700 focus:border-emerald-500 rounded-xl px-3 py-2.5 text-sm text-slate-100 focus:outline-none; }
+  .chip { @apply px-3 py-2 rounded-xl text-xs font-semibold border bg-slate-950 border-slate-800 text-slate-300 whitespace-nowrap active:scale-95 transition; }
+  .chip.on { @apply bg-emerald-950 border-emerald-500 text-emerald-300; }
+  .btn  { @apply flex items-center justify-center gap-2 rounded-2xl font-bold text-sm border border-slate-700 bg-slate-800 text-slate-100 active:scale-95 transition; }
+  .tog  { @apply flex items-center justify-between gap-2 p-2.5 rounded-xl bg-slate-950 border border-slate-800 text-[12px] font-medium text-slate-300 cursor-pointer; }
+}
+
+.tog input { flex-shrink: 0; }
+html, body { width: 100%; height: 100%; overscroll-behavior: none; -webkit-tap-highlight-color: transparent;
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; }
+body { -webkit-touch-callout: none; }
+input, textarea, select { -webkit-user-select: text; user-select: text; font-size: 16px; } /* >=16px verhindert iOS-Zoom */
+.no-scrollbar::-webkit-scrollbar { display: none; }
+.no-scrollbar { -ms-overflow-style: none; scrollbar-width: none; }
+.safe-b { padding-bottom: calc(env(safe-area-inset-bottom, 0px) + 6px); }
+.safe-t { padding-top: calc(env(safe-area-inset-top, 0px) + 8px); }
+#photoCanvas { touch-action: manipulation; }
+.leaflet-container { background: #020617 !important; font-family: inherit; }
+.leaflet-tile-pane { filter: invert(1) hue-rotate(180deg) brightness(.85) contrast(.9) saturate(.6); }
+.leaflet-control-attribution { font-size: 9px !important; background: rgba(2,6,23,.75) !important; color: #94a3b8 !important; }
+.leaflet-control-attribution a { color: #34d399 !important; }
+
+@media print {
+  html, body { height: auto; overflow: visible !important; background: #fff !important; color: #0f172a !important; }
+  header, nav, #view-capture, .no-print, #modal, #settings { display: none !important; }
+  #scroller { overflow: visible !important; }
+  #view-stats { display: block !important; max-width: 100% !important; padding: 0 !important; }
+  .card { background: #fff !important; border: 1px solid #cbd5e1 !important; break-inside: avoid; }
+  .card * { color: #0f172a !important; }
+}
