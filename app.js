@@ -241,7 +241,7 @@ const TO_L = { 0: 'O', 1: 'I', 5: 'S', 8: 'B', 2: 'Z', 6: 'G' }, TO_D = { O: 0, 
 const fixL = (t) => t.replace(/[0-9]/g, (c) => TO_L[c] || c);
 const fixD = (t) => t.replace(/[A-Z]/g, (c) => (TO_D[c] !== undefined ? TO_D[c] : c));
 function normTok(t) { return t.toUpperCase().replace(/[^A-ZÄÖÜ0-9]/g, ''); }
-function plateCandidates(words) {
+function plateCandidates(words, strict = false) {
   // words: [{text, conf, bbox:{x0,y0,x1,y1}}] -> Kennzeichen-Kandidaten (Teilfolgen je Zeile, Rauschen dazwischen erlaubt)
   const toks = words.map((w) => ({ t: normTok(w.text), conf: w.conf, b: w.bbox })).filter((w) => w.t.length > 0);
   toks.sort((a, b) => (a.b.y0 + a.b.y1) - (b.b.y0 + b.b.y1));
@@ -255,7 +255,7 @@ function plateCandidates(words) {
   for (const ln of lines) {
     const row = ln.t.sort((a, b) => a.b.x0 - b.b.x0).slice(0, 10), n = row.length;
     const tryseq = (seq) => {
-      const p = parsePlate(seq.map((q) => q.t)); if (!p) return;
+      const p = parsePlate(seq.map((q) => q.t), strict); if (!p) return;
       const skip = row.indexOf(seq[seq.length - 1]) - row.indexOf(seq[0]) + 1 - seq.length;
       const hgt = Math.max(...seq.map((q) => q.b.y1 - q.b.y0), 8);
       for (let i = 1; i < seq.length; i++) if (seq[i].b.x0 - seq[i - 1].b.x1 > hgt * 3.5) return; // zu weit auseinander
@@ -276,23 +276,33 @@ function overlap(a, b) {
   return inter / Math.min(ua, ub || 1);
 }
 /* Tokens -> „HD AM 2330"; null, wenn kein deutsches Kennzeichenmuster. OCR-Verwechslungen (0/O, 1/I, 5/S, 8/B …) werden je Position korrigiert. */
-function parsePlate(t) {
-  const dig = (x) => { const m = fixD(x).match(/^(\d{1,4})([EH]?)$/); return m ? m[1] + m[2] : null; };
-  const let1 = (x, max) => { const y = fixL(x); return new RegExp('^[A-ZÄÖÜ]{1,' + max + '}$').test(y) ? y : null; };
+function parsePlate(tin, strict = false) {
+  const fl = strict ? (x) => x : fixL, fd = strict ? (x) => x : fixD;
+  // Plakette zwischen Ortskürzel und Buchstaben wird oft als Ziffer/Zeichen gelesen („HD2AM") -> Token aufspalten
+  let t = [];
+  for (const x of tin) { const m = x.match(/^([A-ZÄÖÜ]{1,3})[0-9OSQ]([A-Z]{1,2})([0-9OIQDLSBZG]{0,5}[A-Z0-9]?)$/); if (m && !strict) { t.push(m[1], m[2]); if (m[3]) t.push(m[3]); } else t.push(x); }
+  // Ziffernblock: bis 4 Ziffern (+E/H); ein Zusatzzeichen dahinter (Randlinie als „8"/„N" gelesen) wird verworfen
+  const dig = (x) => { const m = x.match(/^([0-9OIQDLSBZG]{1,4})([EH]?)([A-Z0-9])?$/); if (!m) return null; if (!/[0-9]/.test(m[1])) return null; /* mind. eine echt gelesene Ziffer */ const d = fd(m[1]); return /^\d{1,4}$/.test(d) ? d + (m[3] ? '' : m[2]) + (m[3] && m[2] ? m[2] : '') : null; };
+  const let1 = (x, max) => { const y = fl(x); return new RegExp('^[A-ZÄÖÜ]{1,' + max + '}$').test(y) ? y : null; };
   let a, b, c;
   if (t.length === 3) { a = let1(t[0], 3); b = let1(t[1], 2); c = dig(t[2]); if (a && b && c) return `${a} ${b} ${c}`; }
   if (t.length === 2) {
     a = let1(t[0], 3);
-    if (a) { const m = t[1].match(/^([A-Z0-9]{1,3}?)([0-9OIlSBZ]{1,4}[EH]?)$/); if (m) { b = let1(m[1], 2); c = dig(m[2]); if (b && c && /\d/.test(c)) return `${a} ${b} ${c}`; } }
+    if (a) { const m = t[1].match(/^([A-Z0-9]{1,2}?)([0-9OIQDLSBZG]{1,5}[A-Z]?)$/); if (m) { b = let1(m[1], 2); c = dig(m[2]); if (b && c && /\d/.test(c)) return `${a} ${b} ${c}`; } }
     const m2 = t[0].match(/^([A-ZÄÖÜ]{3,5})$/); c = dig(t[1]);
-    if (m2 && c && /^\d/.test(c)) { const l = m2[1], cut = l.length >= 4 ? 2 : 2; return `${l.slice(0, cut)} ${l.slice(cut)} ${c}`; }
+    if (m2 && c && /^\d/.test(c)) { const l = m2[1]; return `${l.slice(0, 2)} ${l.slice(2)} ${c}`; }
   }
   if (t.length === 1) {
-    const m = t[0].match(/^([A-ZÄÖÜ]{3,5})([0-9OIS]{1,4}[EH]?)$/); c = m && dig(m[2]);
+    const m = t[0].match(/^([A-ZÄÖÜ]{3,5})([0-9OIS]{1,5}[A-Z]?)$/); c = m && dig(m[2]);
     if (m && c && /^\d/.test(c)) { const l = m[1]; return `${l.slice(0, 2)} ${l.slice(2)} ${c}`; }
   }
   return null;
 }
+function plateFromText(text, conf = 60, strict = false) {
+  const toks = String(text).split(/\s+/).map(normTok).filter(Boolean);
+  return plateCandidates(toks.map((t, i) => ({ text: t, conf, bbox: { x0: i * 100, y0: 0, x1: i * 100 + 80, y1: 40 } })), strict);
+}
+
 /* --- Kennzeichen lokalisieren (klassische Bildverarbeitung) + Region-OCR ---
  * Vollbild-OCR findet Kennzeichen in Straßenszenen kaum zuverlässig. Daher: helle Rechtecke mit dichten
  * senkrechten Kanten (= Schriftband) suchen, nur diese Ausschnitte lesen und strikt gegen das deutsche
@@ -348,25 +358,66 @@ function enhanceCanvas(cv) {
   for (let i = 0; i < d.length; i += 4) { const v = Math.max(0, Math.min(255, ((d[i] - lo) * 255) / span)); d[i] = d[i + 1] = d[i + 2] = v; }
   g.putImageData(im, 0, 0);
 }
-async function ocrPlatesIn(canvas, maxRegions = 8) {
-  const regs = findPlateRegions(canvas).slice(0, maxRegions), found = [], w = await getOcr();
+function blueStripEnd(cv) {
+  const W = Math.floor(cv.width * 0.35), h = cv.height; if (W < 4) return 0;
+  const d = cv.getContext('2d', { willReadFrequently: true }).getImageData(0, 0, W, h).data; let start = -1, end = 0, gap = 0;
+  for (let x = 0; x < W; x++) {
+    let c = 0; for (let y = 0; y < h; y += 2) { const i = (y * W + x) * 4; if (d[i + 2] > d[i] + 30 && d[i + 2] > d[i + 1] + 8) c++; }
+    const blue = c > (h / 2) * 0.3;
+    if (blue) { if (start < 0) start = x; end = x + 1; gap = 0; } else if (start >= 0 && ++gap > 3) break;
+  }
+  return start >= 0 && end - start > cv.width * 0.03 ? end : 0;
+}
+function otsu(d) {
+  const hist = new Uint32Array(256); let n = 0; for (let i = 0; i < d.length; i += 4) { hist[d[i]]++; n++; }
+  let sum = 0; for (let i = 0; i < 256; i++) sum += i * hist[i]; let sB = 0, wB = 0, best = 0, th = 128;
+  for (let i = 0; i < 256; i++) { wB += hist[i]; if (!wB) continue; const wF = n - wB; if (!wF) break; sB += i * hist[i]; const mB = sB / wB, mF = (sum - sB) / wF, v = wB * wF * (mB - mF) * (mB - mF); if (v > best) { best = v; th = i; } }
+  return th;
+}
+/* Mehrere Aufbereitungen eines Kennzeichen-Ausschnitts. Der blaue EU-Streifen und dunkle Randlinien werden abgeschnitten
+ * (sonst als „E"/„8" gelesen); weiße Ränder helfen Tesseract; mehrere Maßstäbe/Kontraste, danach Abstimmung. */
+function plateVariants(canvas, r) {
+  const sx = Math.max(0, r.x - r.w * 0.04), sy = Math.max(0, r.y - r.h * 0.12), sw = Math.min(canvas.width - sx, r.w * 1.08), sh = Math.min(canvas.height - sy, r.h * 1.24);
+  const base = document.createElement('canvas'); base.width = Math.max(8, Math.round(sw)); base.height = Math.max(8, Math.round(sh));
+  const bg = base.getContext('2d', { willReadFrequently: true }); bg.drawImage(canvas, sx, sy, sw, sh, 0, 0, base.width, base.height);
+  let x0 = 0, x1 = base.width; const be = blueStripEnd(base); if (be > 0 && be < base.width * 0.3) x0 = be;
+  const bd = bg.getImageData(0, 0, base.width, base.height).data;
+  const colLum = (x) => { let a = 0, n = 0; for (let y = Math.round(base.height * 0.3); y < base.height * 0.7; y += 2) { const i = (y * base.width + x) * 4; a += (bd[i] * 77 + bd[i + 1] * 150 + bd[i + 2] * 29) >> 8; n++; } return a / n; };
+  let cut = 0; while (cut < base.width * 0.05 && x1 - 1 > x0 + 10 && colLum(x1 - 1) < 90) { x1--; cut++; }
+  const vars = [];
+  for (const [target, mode] of [[140, 'enh'], [140, 'raw'], [100, 'enh'], [200, 'raw'], [140, 'bin']]) {
+    const k = Math.max(0.5, Math.min(6, target / r.h)), pad = 12, w = Math.round((x1 - x0) * k), h = Math.round(base.height * k);
+    const cr = document.createElement('canvas'); cr.width = w + 2 * pad; cr.height = h + 2 * pad;
+    const g = cr.getContext('2d', { willReadFrequently: true }); g.fillStyle = '#fff'; g.fillRect(0, 0, cr.width, cr.height); g.imageSmoothingQuality = 'high';
+    g.drawImage(base, x0, 0, x1 - x0, base.height, pad, pad, w, h);
+    if (mode !== 'raw') { enhanceCanvas(cr); if (mode === 'bin') { const im = g.getImageData(0, 0, cr.width, cr.height), th = otsu(im.data); for (let i = 0; i < im.data.length; i += 4) { const v = im.data[i] > th ? 255 : 0; im.data[i] = im.data[i + 1] = im.data[i + 2] = v; } g.putImageData(im, 0, 0); } }
+    vars.push(cr);
+  }
+  return vars;
+}
+async function readPlateRegion(canvas, r) {
+  const w = await getOcr(), votes = new Map();
+  for (const v of plateVariants(canvas, r)) {
+    const { data } = await w.recognize(v); const txt = (data.text || '').trim().replace(/\s+/g, ' '); (S.dbg ||= { regions: 0, reads: [], tiles: 0 }).reads.push(txt);
+    const c = plateFromText(txt, data.confidence || 0)[0];
+    if (c) { const e = votes.get(c.text) || { n: 0, conf: 0 }; e.n++; e.conf = Math.max(e.conf, data.confidence || 0); votes.set(c.text, e); if (e.n >= 2) break; }
+  }
+  if (!votes.size) return null;
+  const [text, e] = [...votes.entries()].sort((a, b) => b[1].n - a[1].n || b[1].conf - a[1].conf)[0];
+  return { text, conf: e.conf, votes: e.n };
+}
+async function ocrPlatesIn(canvas, maxRegions = 4) {
+  const regs = findPlateRegions(canvas).slice(0, maxRegions), found = [];
   S.dbg = { regions: regs.length, reads: [], tiles: 0 };
   for (const r of regs) {
-    const px = r.w * 0.2, py = r.h * 0.55, sx = Math.max(0, r.x - px), sy = Math.max(0, r.y - py), sw = Math.min(canvas.width - sx, r.w + 2 * px), sh = Math.min(canvas.height - sy, r.h + 2 * py);
-    const k = Math.max(0.5, Math.min(4, 56 / r.h));
-    const cr = document.createElement('canvas'); cr.width = Math.max(8, Math.round(sw * k)); cr.height = Math.max(8, Math.round(sh * k));
-    const g = cr.getContext('2d', { willReadFrequently: true }); g.imageSmoothingQuality = 'high'; g.fillStyle = '#fff'; g.fillRect(0, 0, cr.width, cr.height);
-    g.drawImage(canvas, sx, sy, sw, sh, 0, 0, cr.width, cr.height); enhanceCanvas(cr);
-    const { data } = await w.recognize(cr); S.dbg.reads.push((data.text || '').trim().replace(/\s+/g, ' '));
-    for (const cand of plateCandidates((data.words || []).map((q) => ({ text: q.text, conf: Math.max(q.confidence, data.confidence || 0), bbox: q.bbox })))) {
-      found.push({ text: cand.text, conf: cand.conf, box: { x0: sx + cand.box.x0 / k, y0: sy + cand.box.y0 / k, x1: sx + cand.box.x1 / k, y1: sy + cand.box.y1 / k } });
-    }
+    const res = await readPlateRegion(canvas, r); if (!res) continue;
+    if (res.votes < 2 && res.text.replace(/ /g, '').length < 6) continue;   // Einzeltreffer nur bei ausreichend langem Kennzeichen (Fehlalarme)
+    found.push({ ...res, box: { x0: r.x, y0: r.y, x1: r.x + r.w, y1: r.y + r.h } });
   }
-  found.sort((a, b) => b.conf - a.conf); const kept = [];
+  found.sort((a, b) => b.votes - a.votes || b.conf - a.conf); const kept = [];
   for (const f of found) if (!kept.some((q) => overlap(q.box, f.box) > 0.3)) kept.push(f);
   return kept;
 }
-
 
 /* Fallback, wenn die Lokalisierung nichts findet: überlappende Kacheln, hochskaliert, Mehrzeilen-Modus */
 async function ocrTiles(canvas) {
@@ -379,14 +430,15 @@ async function ocrTiles(canvas) {
       const g = cr.getContext('2d', { willReadFrequently: true }); g.imageSmoothingQuality = 'high'; g.drawImage(canvas, sx, sy, tw, th, 0, 0, cr.width, cr.height); enhanceCanvas(cr);
       setOcrStatus('busy', `Suche Kennzeichen (Kachel ${r * cols + c + 1}/${cols * rows}) …`); S.dbg.tiles++;
       const { data } = await w.recognize(cr);
-      for (const cand of plateCandidates((data.words || []).map((q) => ({ text: q.text, conf: Math.max(q.confidence, data.confidence || 0), bbox: q.bbox })))) {
+      for (const cand of plateCandidates((data.words || []).map((q) => ({ text: q.text, conf: Math.max(q.confidence, data.confidence || 0), bbox: q.bbox })), true)) {
+        if (cand.conf < 55) continue;
         found.push({ text: cand.text, conf: cand.conf, box: { x0: sx + cand.box.x0 / k, y0: sy + cand.box.y0 / k, x1: sx + cand.box.x1 / k, y1: sy + cand.box.y1 / k } });
       }
     }
   } finally { await w.setParameters({ tessedit_pageseg_mode: '7' }); }
   found.sort((a, b) => b.conf - a.conf); const kept = [];
   for (const f of found) if (!kept.some((q) => overlap(q.box, f.box) > 0.3)) kept.push(f);
-  return kept;
+  return kept.slice(0, 3);
 }
 
 async function getOcr() {
@@ -434,24 +486,20 @@ async function tapCensor(ev) {
   const w = Math.round(p.orig.width * 0.2), h = Math.round(w / 4.2);
   const box = { x: Math.max(0, Math.min(p.orig.width - w, x - w / 2)), y: Math.max(0, Math.min(p.orig.height - h, y - h / 2)), w, h };
   p.boxes.push(box); renderPhoto(); renderThumbs(); markDirty();
-  // Region ausschneiden (großzügig), hochskalieren, lesen
+  // Kennzeichen-Region unter dem Finger suchen (ganzes Bild), sonst Bereich um den Tipp-Punkt
   try {
-    setOcrStatus('busy', 'Lese Kennzeichen …');
-    const pad = 0.6, cx = box.x - box.w * pad / 2, cy = box.y - box.h * pad, cw = box.w * (1 + pad), ch = box.h * (1 + 2 * pad);
-    const sx = Math.max(0, cx), sy = Math.max(0, cy), sw = Math.min(p.orig.width - sx, cw), sh = Math.min(p.orig.height - sy, ch);
-    const k = Math.max(1, Math.min(5, 1000 / sw)); const crop = document.createElement('canvas'); crop.width = Math.round(sw * k); crop.height = Math.round(sh * k);
-    const g = crop.getContext('2d'); g.imageSmoothingQuality = 'high'; g.drawImage(p.orig, sx, sy, sw, sh, 0, 0, crop.width, crop.height);
-    let c = await ocrPlatesIn(crop, 4);
-    if (!c.length) { enhanceCanvas(crop); const w2 = await getOcr(); const { data } = await w2.recognize(crop); c = plateCandidates((data.words || []).map((q) => ({ text: q.text, conf: q.confidence, bbox: q.bbox }))); }
-    if (c.length) {
-      const best = c[0];
-      // Balken exakt auf gelesenes Kennzeichen zuschneiden
-      const bb = padBox({ x0: sx + best.box.x0 / k, y0: sy + best.box.y0 / k, x1: sx + best.box.x1 / k, y1: sy + best.box.y1 / k }, p.orig, 0.15, 0.25);
-      p.boxes[p.boxes.indexOf(box)] = bb;
-      $('inPlate').value = best.text; S.cur.plate = best.text; S.cur.plateSource = 'ocr'; renderPlateBadge();
-      setOcrStatus('ok', `Gelesen: ${best.text} – bitte prüfen`);
-    } else setOcrStatus('warn', 'Balken gesetzt – Kennzeichen bitte von Hand eintippen');
-  } catch (e) { setOcrStatus('warn', 'Balken gesetzt – Kennzeichen von Hand eintippen'); }
+    setOcrStatus('busy', 'Lese Kennzeichen …'); S.dbg = { regions: 0, reads: [], tiles: 0 };
+    const regs = findPlateRegions(p.orig);
+    const hit = regs.filter((r) => x >= r.x - r.w * 0.15 && x <= r.x + r.w * 1.15 && y >= r.y - r.h * 0.8 && y <= r.y + r.h * 1.8).sort((a, b) => b.score - a.score)[0];
+    const tries = hit ? [hit] : [{ x: box.x, y: box.y, w: box.w, h: box.h }, { x: box.x - box.w * 0.25, y: box.y - box.h * 0.2, w: box.w * 1.5, h: box.h * 1.4 }];
+    let res = null, used = null;
+    for (const r of tries) { res = await readPlateRegion(p.orig, r); if (res) { used = r; break; } }
+    if (res) {
+      p.boxes[p.boxes.indexOf(box)] = padBox({ x0: used.x, y0: used.y, x1: used.x + used.w, y1: used.y + used.h }, p.orig, 0.15, 0.25);
+      $('inPlate').value = res.text; S.cur.plate = res.text; S.cur.plateSource = 'ocr'; renderPlateBadge();
+      setOcrStatus('ok', `Gelesen: ${res.text} – bitte prüfen`);
+    } else setOcrStatus('warn', hit ? 'Balken gesetzt – Kennzeichen nicht lesbar, bitte eintippen' : 'Balken gesetzt – Kennzeichen bitte von Hand eintippen');
+  } catch (e) { S.ocrErr = String((e && e.message) || e); setOcrStatus('warn', 'Balken gesetzt – Kennzeichen von Hand eintippen'); }
   renderPhoto(); renderThumbs(); markDirty();
   setTimeout(() => { if (!S.ocrBusy) $('ocrStatus').classList.add('hidden'); }, 5000);
 }
