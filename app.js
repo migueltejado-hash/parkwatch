@@ -1,5 +1,5 @@
 /* ParkWatch Quartier v2.0 – Anwendungslogik (offline-first, keine Build-Abhängigkeit zur Laufzeit) */
-const APP_VERSION = "2.1.0";
+const APP_VERSION = "2.1.1";
 'use strict';
 
 const $ = (id) => document.getElementById(id);
@@ -597,7 +597,7 @@ async function aiRecognize(silent = false) {
         { type: 'text', text: 'Bestimme das am deutlichsten sichtbare, geparkte Fahrzeug. Antworte NUR mit JSON: {"marke":"","modell":"","klasse":"PKW|Transporter|LKW|Anhänger|Wohnmobil|Zweirad","farbe":"Weiß|Schwarz|Grau/Silber|Blau|Rot|Grün|Gelb/Orange|Braun/Beige","sicherheit":"hoch|mittel|niedrig"}. Unbekanntes als leeren String.' }
       ] }] })
     });
-    if (!res.ok) throw new Error('HTTP ' + res.status);
+    if (!res.ok) { let m = ''; try { m = (await res.json()).error?.message || ''; } catch (e) { /* kein JSON */ } throw new Error('HTTP ' + res.status + (m ? ': ' + m.slice(0, 90) : '')); }
     const txt = (await res.json()).content?.map((x) => x.text || '').join('') || '';
     const j = JSON.parse(txt.match(/\{[\s\S]*\}/)[0]); const c = S.cur;
     const brandKey = Object.keys(BRANDS).find((n) => n.toLowerCase() === String(j.marke || '').toLowerCase()) || j.marke || '';
