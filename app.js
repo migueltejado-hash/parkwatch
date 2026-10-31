@@ -1,5 +1,5 @@
 /* ParkWatch Quartier v2.0 – Anwendungslogik (offline-first, keine Build-Abhängigkeit zur Laufzeit) */
-const APP_VERSION = "2.1.1";
+const APP_VERSION = "2.1.2";
 'use strict';
 
 const $ = (id) => document.getElementById(id);
@@ -625,6 +625,7 @@ function collectForm() {
 }
 async function save() {
   collectForm(); const c = S.cur;
+  if (!c.photos.length) { toast('Ohne Foto kann nicht gespeichert werden – bitte zuerst ein Foto aufnehmen oder laden', 3500); return; }
   if (!c.coords) { toast('Kein Standort – bitte Ort auf der Karte setzen', 3500); locateHint(); return; }
   const m = matchEntry(); if (!m) { toast('Bitte TBNR/Text eintragen'); return; }
   if (c.photos.some((p) => !p.locked && !p.doc && p.boxes.length === 0) && !confirm('Auf mindestens einem Foto ist kein Kennzeichen geschwärzt. Trotzdem speichern?')) return;
@@ -706,7 +707,8 @@ async function refreshStats() {
       <div class="w-14 h-14 rounded-lg bg-slate-950 overflow-hidden flex-shrink-0 border border-slate-800">${r.blurredPhoto ? `<img src="${r.blurredPhoto}" class="w-full h-full object-cover" alt="">` : '<div class="w-full h-full flex items-center justify-center text-slate-600"><i class="fa-solid fa-image"></i></div>'}</div>
       <div class="min-w-0 flex-1"><div class="text-xs font-semibold text-slate-200 truncate">${esc(r.vehicleModel)} <span class="font-mono text-emerald-400 text-[10px]">${esc(r.licensePlate || '')}</span></div>
       <div class="text-[10px] text-amber-400 font-mono">TBNR ${esc(r.tbnr)} · ${r.fine} €${r.tbVerified ? '' : ' ⚠'}</div>
-      <div class="text-[10px] text-slate-400 truncate">${esc(r.address)} · ${fmtDT(Date.parse(r.timestamp))}${r.isSchoolRoute ? ' · <span class="text-rose-400">Schulweg</span>' : ''}</div></div>
+      <div class="text-[10px] text-slate-400 truncate">${esc(r.address)} · ${fmtDT(Date.parse(r.timestamp))}${r.isSchoolRoute ? ' · <span class="text-rose-400">Schulweg</span>' : ''}</div>
+      ${r.notes ? `<div class="text-[10px] text-slate-300 mt-0.5" style="display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden"><i class="fa-solid fa-note-sticky text-slate-500 mr-1"></i>${esc(r.notes)}</div>` : ''}</div>
       <i class="fa-solid fa-chevron-right text-xs text-slate-500"></i></button>`).join('');
 }
 function openDetail(id) {
