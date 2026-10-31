@@ -1,12 +1,12 @@
 /* ParkWatch Quartier v2.0 – Anwendungslogik (offline-first, keine Build-Abhängigkeit zur Laufzeit) */
-const APP_VERSION = "2.0.3";
+const APP_VERSION = "2.1.0";
 'use strict';
 
 const $ = (id) => document.getElementById(id);
 const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 const HEMSBACH = { lat: 49.5884, lng: 8.6492 }; // nur Kartenmitte vor dem ersten Fix – wird NIE als Fall-Standort gespeichert
 const NARROW_CM = 150;                           // App-Schwelle (keine gesetzliche Grenze) für „Engstelle Rollstuhl/Kinderwagen"
-const MAX_PHOTOS = 3;
+const MAX_PHOTOS = 6;
 const MAX_ORIG_PX = 2000, MAX_OUT_PX = 1600;
 
 /* ---------- Zustand ---------- */
@@ -79,7 +79,7 @@ const saveDraftSoon = debounce(async () => {
   const c = S.cur; const hasContent = c.photos.length || c.plate || c.notes || c.model || c.brand;
   if (!hasContent) { try { await draftDel(); } catch (e) {} $('draftBadge').classList.add('hidden'); return; }
   try {
-    const cc = { ...c, photos: c.photos.map((p) => ({ origUrl: p.origUrl, boxes: p.boxes, ts: p.ts, locked: !!p.locked })) };
+    const cc = { ...c, photos: c.photos.map((p) => ({ origUrl: p.origUrl, boxes: p.boxes, ts: p.ts, locked: !!p.locked, doc: !!p.doc })) };
     await draftPut({ cur: cc, editId: S.editId, savedAt: Date.now() });
     $('draftBadge').classList.remove('hidden');
   } catch (e) { console.warn('Entwurf nicht speicherbar', e); }
@@ -172,8 +172,8 @@ async function addPhoto(file) {
   try { img = await loadImage(file); } catch (e) { setOcrStatus('hide'); toast('Foto konnte nicht gelesen werden'); return; }
   const canvas = scaledCanvas(img, MAX_ORIG_PX);
   const ts = (meta && (meta.DateTimeOriginal || meta.CreateDate)) ? new Date(meta.DateTimeOriginal || meta.CreateDate).getTime() : Date.now();
-  const photo = { orig: canvas, origUrl: canvas.toDataURL('image/jpeg', 0.9), boxes: [], ts, out: null };
   const first = S.cur.photos.length === 0;
+  const photo = { orig: canvas, origUrl: canvas.toDataURL('image/jpeg', 0.9), boxes: [], ts, out: null, doc: !first };   // doc = Zusatzfoto nur zur Dokumentation (keine Kennzeichen-Suche)
   S.cur.photos.push(photo); S.cur.active = S.cur.photos.length - 1;
 
   if (first) {
@@ -189,7 +189,8 @@ async function addPhoto(file) {
     } else if (!S.cur.coords || file.__fromGallery) locate();
   }
   renderPhoto(); renderThumbs(); updateObservation(); renderViolation(); markDirty();
-  runOcr(photo);
+  if (photo.doc) { setOcrStatus('ok', 'Zusatzfoto hinzugefügt – keine Kennzeichen-Suche'); setTimeout(() => { if (!S.ocrBusy) $('ocrStatus').classList.add('hidden'); }, 3500); }
+  else runOcr(photo);
 }
 function locateHint() { $('mapWrap').scrollIntoView({ behavior: 'smooth', block: 'center' }); }
 
@@ -218,7 +219,7 @@ function renderThumbs() {
     const cv = document.createElement('canvas'); const k = 120 / Math.max(p.orig.width, p.orig.height); cv.width = Math.round(p.orig.width * k); cv.height = Math.round(p.orig.height * k);
     const g = cv.getContext('2d'); g.drawImage(p.orig, 0, 0, cv.width, cv.height); g.fillStyle = '#000';
     p.boxes.forEach((b) => g.fillRect(b.x * k, b.y * k, b.w * k, b.h * k));
-    return `<button data-i="${i}" class="relative w-20 h-16 rounded-lg overflow-hidden border-2 ${i === S.cur.active ? 'border-emerald-500' : 'border-slate-700'} bg-slate-950"><img src="${cv.toDataURL('image/jpeg', 0.6)}" class="w-full h-full object-cover" alt=""><span class="absolute bottom-0 inset-x-0 text-[9px] bg-slate-950/80 text-slate-300">${new Date(p.ts).toLocaleTimeString('de-DE', { hour: '2-digit', minute: '2-digit' })}</span></button>`;
+    return `<button data-i="${i}" class="relative w-20 h-16 rounded-lg overflow-hidden border-2 ${i === S.cur.active ? 'border-emerald-500' : 'border-slate-700'} bg-slate-950"><img src="${cv.toDataURL('image/jpeg', 0.6)}" class="w-full h-full object-cover" alt=""><span class="absolute bottom-0 inset-x-0 text-[9px] bg-slate-950/80 text-slate-300">${p.doc ? 'Doku · ' : ''}${new Date(p.ts).toLocaleTimeString('de-DE', { hour: '2-digit', minute: '2-digit' })}</span></button>`;
   }).join('');
 }
 function updateObservation() {
@@ -626,7 +627,8 @@ async function save() {
   collectForm(); const c = S.cur;
   if (!c.coords) { toast('Kein Standort – bitte Ort auf der Karte setzen', 3500); locateHint(); return; }
   const m = matchEntry(); if (!m) { toast('Bitte TBNR/Text eintragen'); return; }
-  if (c.photos.length && c.photos.some((p) => !p.locked && p.boxes.length === 0) && !confirm('Auf mindestens einem Foto ist kein Kennzeichen geschwärzt. Trotzdem speichern?')) return;
+  if (c.photos.some((p) => !p.locked && !p.doc && p.boxes.length === 0) && !confirm('Auf mindestens einem Foto ist kein Kennzeichen geschwärzt. Trotzdem speichern?')) return;
+  if (c.photos.some((p) => !p.locked && p.doc && p.boxes.length === 0) && !confirm('Zusatzfotos werden nicht automatisch geprüft. Ist auf keinem davon ein Kennzeichen oder Gesicht erkennbar? (Sonst: Foto antippen und aufs Kennzeichen tippen.)')) return;
   const e = m.entry; const outs = c.photos.map((p) => ({ img: renderFinalPhoto(p), ts: p.ts }));
   const times = c.photos.map((p) => p.ts).sort((a, b) => a - b);
   const rec = {
@@ -811,7 +813,7 @@ async function init() {
       const d = await draftGet();
       if (d && d.cur) {
         const c = Object.assign(emptyCase(), d.cur); c.photos = [];
-        for (const p of d.cur.photos || []) { const cv = await canvasFromUrl(p.origUrl); c.photos.push({ orig: cv, origUrl: p.origUrl, boxes: p.boxes || [], ts: p.ts, out: null, locked: !!p.locked }); }
+        for (const p of d.cur.photos || []) { const cv = await canvasFromUrl(p.origUrl); c.photos.push({ orig: cv, origUrl: p.origUrl, boxes: p.boxes || [], ts: p.ts, out: null, locked: !!p.locked, doc: !!p.doc }); }
         S.cur = c; S.editId = d.editId || null; restored = true;
         if (c.coords) { placeMarker(c.coords.lat, c.coords.lng); S.map.setView([c.coords.lat, c.coords.lng], 17); }
         renderAll(); $('draftBadge').classList.remove('hidden'); toast('Entwurf wiederhergestellt');
@@ -824,7 +826,7 @@ async function init() {
 
   /* Events */
   $('inCamera').addEventListener('change', (e) => { addPhoto(e.target.files[0]); e.target.value = ''; });
-  $('inGallery').addEventListener('change', (e) => { const f = e.target.files[0]; if (f) f.__fromGallery = true; addPhoto(f); e.target.value = ''; });
+  $('inGallery').addEventListener('change', async (e) => { const fs = [...e.target.files]; e.target.value = ''; for (const f of fs) { f.__fromGallery = true; await addPhoto(f); } });
   $('photoCanvas').addEventListener('click', tapCensor);
   $('btnUndoBox').onclick = () => { const p = S.cur.photos[S.cur.active]; if (p?.boxes.length) { p.boxes.pop(); renderPhoto(); renderThumbs(); markDirty(); } };
   $('btnBoxBigger').onclick = () => adjustLastBox(1.15); $('btnBoxSmaller').onclick = () => adjustLastBox(0.87);
