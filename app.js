@@ -1,5 +1,5 @@
 /* ParkWatch Quartier v2.0 – Anwendungslogik (offline-first, keine Build-Abhängigkeit zur Laufzeit) */
-const APP_VERSION = "2.1.2";
+const APP_VERSION = "2.1.3";
 'use strict';
 
 const $ = (id) => document.getElementById(id);
@@ -745,6 +745,42 @@ async function shareOrDownload(name, blob) {
   const url = URL.createObjectURL(blob); const a = document.createElement('a'); a.href = url; a.download = name; document.body.appendChild(a); a.click(); a.remove(); setTimeout(() => URL.revokeObjectURL(url), 4000);
 }
 const csvCell = (v) => { let s = v == null ? '' : String(v); if (/^[=+\-@\t\r]/.test(s)) s = "'" + s; return '"' + s.replace(/"/g, '""') + '"'; };
+/* Bericht als eigenständige HTML-Datei (druckfreundlich, anonym: ohne Kennzeichen). iOS-PWA kann window.print() nicht zuverlässig. */
+function buildReportHtml(rs) {
+  const sorted = rs.slice().sort((a, b) => Date.parse(a.timestamp) - Date.parse(b.timestamp)), n = sorted.length;
+  const d0 = fmtDT(Date.parse(sorted[0].timestamp)).split(',')[0], d1 = fmtDT(Date.parse(sorted[n - 1].timestamp)).split(',')[0];
+  const cnt = (f) => sorted.filter(f).length, roads = {};
+  sorted.forEach((r) => { const k = r.road || r.address || 'unbekannt'; roads[k] = (roads[k] || 0) + 1; });
+  const hot = Object.entries(roads).sort((a, b) => b[1] - a[1]).slice(0, 10).map(([k, v]) => `<tr><td>${esc(k)}</td><td class="r">${v}</td><td class="r">${Math.round(v / n * 100)} %</td></tr>`).join('');
+  const sum = sorted.reduce((t, r) => t + (+r.fine || 0), 0);
+  const noKz = (t) => esc((t || '').replace(/\b[A-ZÄÖÜ]{1,3}[ -]?[A-Z]{1,2}[ -]?\d{1,4}[EH]?\b/g, '[Kz]'));
+  const cases = sorted.map((r, i) => `<section class="case"><h3>Fall ${i + 1} · ${esc(fmtDT(Date.parse(r.timestamp)))}</h3>
+    <div class="grid"><div>${(r.photos && r.photos.length ? r.photos : (r.blurredPhoto ? [{ img: r.blurredPhoto }] : [])).map((ph) => `<img src="${ph.img}" alt="Foto (Kennzeichen geschwärzt)">`).join('')}</div>
+    <table class="kv"><tr><td>Ort</td><td>${esc(r.address || '')}${r.coords ? ` <span class="m">(${(+r.coords.lat).toFixed(5)}, ${(+r.coords.lng).toFixed(5)})</span>` : ''}</td></tr>
+    <tr><td>Fahrzeug</td><td>${esc([r.vehicleModel, r.vehicleType, r.vehicleColor].filter(Boolean).join(' · '))}</td></tr>
+    <tr><td>Tatbestand</td><td>TBNR ${esc(r.tbnr)} · ${r.fine} €${r.points ? ' · ' + r.points + ' Pkt' : ''}${r.tbVerified ? '' : ' (nicht verifiziert)'}<br>${esc(r.tbnrDesc || '')}</td></tr>
+    <tr><td>Umstände</td><td>${[r.flags?.behinderung && 'Behinderung', r.flags?.gefaehrdung && 'Gefährdung', (r.rescueRoute || r.flags?.rettung) && 'Rettungsweg', r.isSchoolRoute && 'Schul-/Kitaweg', r.flags?.dauer && `Dauer > ${r.flags.dauer} Std.`, r.restCm != null && r.restCm !== '' && `Restbreite ${r.restCm} cm`].filter(Boolean).join(' · ') || '–'}</td></tr>
+    ${r.notes ? `<tr><td>Notiz</td><td>${noKz(r.notes)}</td></tr>` : ''}</table></div></section>`).join('');
+  return `<!doctype html><html lang="de"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>ParkWatch Bericht</title><style>
+  body{font:14px/1.4 -apple-system,Segoe UI,Arial,sans-serif;color:#111;max-width:820px;margin:0 auto;padding:16px}h1{margin:0 0 4px;font-size:22px}h2{font-size:16px;margin:18px 0 6px;border-bottom:1px solid #999}h3{font-size:14px;margin:0 0 6px}
+  .m{color:#555;font-size:12px}table{border-collapse:collapse;width:100%}td{padding:3px 6px;vertical-align:top;border-bottom:1px solid #ddd}.r{text-align:right}.kv td:first-child{width:90px;color:#555}
+  .kpi{display:grid;grid-template-columns:repeat(3,1fr);gap:8px}.kpi div{border:1px solid #bbb;border-radius:6px;padding:6px}.kpi b{display:block;font-size:20px}
+  .case{break-inside:avoid;border:1px solid #bbb;border-radius:6px;padding:8px;margin:10px 0}.grid{display:grid;grid-template-columns:200px 1fr;gap:10px}.grid img{width:100%;margin-bottom:6px;border-radius:4px}
+  button{padding:8px 14px;font-size:14px;margin:8px 0}@media print{button{display:none}body{padding:0}}@media(max-width:560px){.grid{grid-template-columns:1fr}.kpi{grid-template-columns:1fr 1fr}}</style></head><body>
+  <button onclick="window.print()">Drucken / Als PDF sichern</button>
+  <h1>ParkWatch Quartier – Verkehrs- &amp; Sicherheitsbericht</h1><div class="m">Zeitraum ${esc(d0)} – ${esc(d1)} · ${n} Fall${n === 1 ? '' : 'e'} · erstellt ${esc(new Date().toLocaleDateString('de-DE'))} · Kennzeichen anonymisiert</div>
+  <h2>Auswertung</h2><div class="kpi"><div><b>${n}</b>Fälle</div><div><b>${cnt((r) => r.flags?.behinderung || r.flags?.gefaehrdung)}</b>mit Behinderung/Gefährdung</div><div><b>${cnt((r) => r.isSchoolRoute)}</b>Schul-/Kitaweg</div><div><b>${cnt((r) => r.rescueRoute || r.flags?.rettung)}</b>Rettungsweg</div><div><b>${cnt((r) => /LKW|Transporter|Anhänger|Wohnmobil/.test(r.vehicleType || ''))}</b>gewerbl./groß</div><div><b>${sum} €</b>Summe Regelsätze (Orientierung)</div></div>
+  <h2>Hotspots (Straßen)</h2><table>${hot}</table><h2>Erfasste Fälle</h2>${cases}
+  <p class="m">Hinweis: Die App ist eine private Dokumentationshilfe. Tatbestände und Beträge sind Orientierungswerte; die Bewertung obliegt der zuständigen Behörde.</p></body></html>`;
+}
+async function printReport() {
+  if (!S.records.length) return toast('Keine Fälle vorhanden');
+  const html = buildReportHtml(S.records), blob = new Blob([html], { type: 'text/html;charset=utf-8' });
+  const touch = navigator.maxTouchPoints > 1 && /iPhone|iPad|Macintosh/.test(navigator.userAgent);
+  if (!touch) { const w = window.open(URL.createObjectURL(blob), '_blank'); if (w) { setTimeout(() => { try { w.print(); } catch (e) { /* manuell */ } }, 800); return; } }
+  await shareOrDownload(`ParkWatch_Bericht_${new Date().toISOString().slice(0, 10)}.html`, blob);
+  toast('Bericht-Datei geöffnet/geteilt – dort „Drucken / Als PDF sichern“ wählen', 4500);
+}
 async function exportCsv(withPlate) {
   if (!S.records.length) return toast('Keine Daten vorhanden');
   const head = ['ID', 'Zeit', 'Straße', 'Hausnr', 'Ort', 'Lat', 'Lon', 'Standort-Quelle', ...(withPlate ? ['Kennzeichen'] : []), 'Fahrzeug', 'Klasse', 'Farbe', 'TBNR', 'Tatbestand', 'Euro', 'Punkte', 'TBNR_geprüft', 'Behinderung', 'Gefährdung', 'Dauer_h', 'Schulweg', 'Rettungsweg', 'Restbreite_cm', 'Notiz'];
@@ -861,7 +897,7 @@ async function init() {
 
   $('btnSave').onclick = save; $('btnNew').onclick = () => { if (S.dirty && !S.savedId && (S.cur.photos.length || S.cur.plate) && !confirm('Ungespeicherten Fall verwerfen?')) return; newCase(); };
   $('tabCapture').onclick = () => switchTab('capture'); $('tabStats').onclick = () => switchTab('stats');
-  $('btnPrint').onclick = () => window.print();
+  $('btnPrint').onclick = printReport;
   $('btnCsvAnon').onclick = () => exportCsv(false); $('btnCsvFull').onclick = () => exportCsv(true); $('btnBackup').onclick = exportBackup;
   $('inImport').addEventListener('change', (e) => { if (e.target.files[0]) importBackup(e.target.files[0]); e.target.value = ''; });
   $('repRecords').addEventListener('click', (e) => { const b = e.target.closest('[data-open]'); if (b) openDetail(+b.dataset.open); });
