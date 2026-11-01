@@ -1,5 +1,5 @@
 /* ParkWatch Quartier v2.0 – Anwendungslogik (offline-first, keine Build-Abhängigkeit zur Laufzeit) */
-const APP_VERSION = "2.8.0";
+const APP_VERSION = "2.8.1";
 'use strict';
 
 const $ = (id) => document.getElementById(id);
@@ -816,7 +816,7 @@ function renderDashboard(all) {
   h += `<div class="d-card"><div class="d-h"><b><i class="fa-solid fa-table-cells"></i>Wochentag × Tageszeit</b><span>dunkler = mehr</span></div><div class="d-heat"><div class="hd"></div>${TB.map((b) => `<div class="hd">${b[0]}<br>${b[1]}</div>`).join('')}${g.map((row, i) => `<div class="rl">${WD[i]}</div>${row.map((v) => `<div style="background:${v ? `rgba(16,185,129,${(0.18 + 0.82 * v / mx).toFixed(2)})` : '#0b1220'}">${v || ''}</div>`).join('')}`).join('')}</div></div>`;
   const rd = countBy(rs, roadOf), rm = rd[0][1], fineBy = {}; rs.forEach((r) => { const k = roadOf(r); fineBy[k] = (fineBy[k] || 0) + (+r.fine || 0); });
   h += `<div class="d-card"><div class="d-h"><b><i class="fa-solid fa-map-location-dot"></i>Hotspots</b><span>antippen = filtern</span></div>${rd.slice(0, 8).map(([k, v]) => dBar(k, v, rm, n, '#10b981', `data-road="${esc(k)}"`, `${eur(fineBy[k])} · `)).join('')}</div>`;
-  h += `<div class="d-card"><div class="d-h"><b><i class="fa-solid fa-location-dot"></i>Karte</b><span>Kreisgröße = Fälle</span></div><div id="dMap" class="d-map"></div></div>`;
+  h += `<div class="d-card"><div class="d-h"><b><i class="fa-solid fa-location-dot"></i>Karte</b><span>Zahl = Fälle (Standort ≤ 20 m)</span></div><div id="dMap" class="d-map"></div><div class="d-legend"><span><i style="background:#fb7185"></i>mit Behinderung / Schul- / Rettungsweg</span><span><i style="background:#34d399"></i>übrige Fälle</span><span>Antippen = Details</span></div></div>`;
   const tb = {}; rs.forEach((r) => { const k = r.tbnr || '—'; (tb[k] = tb[k] || { t: r.tbnrDesc || '', n: 0, e: 0 }).n++; tb[k].e += +r.fine || 0; });
   const tbl = Object.entries(tb).sort((a, b) => b[1].n - a[1].n);
   h += `<div class="d-card"><div class="d-h"><b><i class="fa-solid fa-gavel"></i>Tatbestände</b><span>TBNR · Anzahl · Summe</span></div>${tbl.map(([k, v]) => dBar(`${k} · ${v.t}`, v.n, tbl[0][1].n, n, '#fbbf24', '', `${eur(v.e)} · `).replace(/<button[^>]*>/, '<div class="d-bar">').replace('</button>', '</div>')).join('')}</div>`;
@@ -834,12 +834,23 @@ function drawDashMap(rs) {
   try {
     if (S.dmap) { S.dmap.remove(); S.dmap = null; }
     const el = $('dMap'); if (!el || typeof L === 'undefined') return;
-    const pts = {}; rs.filter((r) => r.coords).forEach((r) => { const k = r.coords.lat.toFixed(3) + ',' + r.coords.lng.toFixed(3); const p = (pts[k] = pts[k] || { lat: 0, lng: 0, n: 0, road: roadOf(r) }); p.lat += r.coords.lat; p.lng += r.coords.lng; p.n++; });
-    const list = Object.values(pts); if (!list.length) { el.innerHTML = '<div class="d-empty" style="padding:12px">Keine Koordinaten.</div>'; return; }
+    const cl = [], dist = (a, b) => Math.hypot((a.lat - b.lat) * 111320, (a.lng - b.lng) * 111320 * Math.cos(a.lat * Math.PI / 180));
+    rs.filter((r) => r.coords).forEach((r) => {
+      const sev = !!(r.flags?.behinderung || r.flags?.gefaehrdung || r.isSchoolRoute || r.rescueRoute || r.flags?.rettung);
+      let c = cl.find((x) => dist({ lat: x.sl / x.n, lng: x.sg / x.n }, r.coords) <= 20);
+      if (!c) cl.push(c = { sl: 0, sg: 0, n: 0, sev: 0, fine: 0, road: roadOf(r), last: 0 });
+      c.sl += r.coords.lat; c.sg += r.coords.lng; c.n++; c.sev += sev ? 1 : 0; c.fine += +r.fine || 0; c.last = Math.max(c.last, Date.parse(r.timestamp));
+    });
+    if (!cl.length) { el.innerHTML = '<div class="d-empty" style="padding:12px">Keine Koordinaten.</div>'; return; }
     const m = (S.dmap = L.map(el, { zoomControl: false, attributionControl: true })); L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', { maxZoom: 19, attribution: '© OpenStreetMap' }).addTo(m);
-    const mx = Math.max(...list.map((p) => p.n)), ll = [];
-    list.forEach((p) => { const c = [p.lat / p.n, p.lng / p.n]; ll.push(c); L.circleMarker(c, { radius: 8 + 14 * Math.sqrt(p.n / mx), color: '#34d399', weight: 2, fillColor: '#10b981', fillOpacity: 0.45 }).addTo(m).bindTooltip(`${p.road}: ${p.n}`, { permanent: list.length <= 6, direction: 'top' }); });
-    m.fitBounds(ll, { padding: [24, 24], maxZoom: 17 }); setTimeout(() => m.invalidateSize(), 150);
+    const ll = [];
+    cl.sort((a, b) => a.n - b.n).forEach((c) => {
+      const p = [c.sl / c.n, c.sg / c.n], sz = Math.round(26 + 6 * Math.sqrt(c.n)), col = c.sev ? '#fb7185' : '#34d399'; ll.push(p);
+      L.marker(p, { icon: L.divIcon({ className: '', iconSize: [sz, sz], html: `<div style="width:${sz}px;height:${sz}px;border-radius:50%;background:${col};border:3px solid #fff;box-shadow:0 1px 6px #000a;color:#0f172a;font:800 ${sz > 34 ? 15 : 13}px/${sz - 6}px ui-monospace,Menlo,monospace;text-align:center">${c.n}</div>` }) })
+        .addTo(m).bindPopup(`<b>${esc(c.road)}</b><br>${c.n} ${c.n === 1 ? 'Fall' : 'Fälle'}${c.sev ? ` · davon ${c.sev} kritisch` : ''}<br>${eur(c.fine)} · zuletzt ${new Date(c.last).toLocaleDateString('de-DE')}`);
+    });
+    if (ll.length > 1) m.fitBounds(ll, { padding: [34, 34], maxZoom: 18 }); else m.setView(ll[0], 18);
+    setTimeout(() => { m.invalidateSize(); }, 150);
   } catch (e) { console.warn('Dashboard-Karte', e); }
 }
 async function refreshStats() {
