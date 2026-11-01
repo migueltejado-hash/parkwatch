@@ -1,5 +1,5 @@
 /* ParkWatch Quartier v2.0 – Anwendungslogik (offline-first, keine Build-Abhängigkeit zur Laufzeit) */
-const APP_VERSION = "2.5.1";
+const APP_VERSION = "2.6.0";
 'use strict';
 
 const $ = (id) => document.getElementById(id);
@@ -855,6 +855,38 @@ function openCurrentFull() {
   const p = S.cur.photos[S.cur.active]; if (!p) return; const cv = document.createElement('canvas'); drawPhoto(cv, p, false, !S.peek);
   openLightbox(cv.toDataURL('image/jpeg', 0.92), S.peek ? 'Original (ohne Balken) – nur lokal' : 'Foto mit Balken');
 }
+/* ZIP ohne Bibliothek (Methode „gespeichert“ – JPEG lässt sich ohnehin nicht weiter komprimieren) */
+const CRC_T = (() => { const t = new Uint32Array(256); for (let n = 0; n < 256; n++) { let c = n; for (let k = 0; k < 8; k++) c = c & 1 ? 0xEDB88320 ^ (c >>> 1) : c >>> 1; t[n] = c >>> 0; } return t; })();
+const crc32 = (u8) => { let c = 0xFFFFFFFF; for (let i = 0; i < u8.length; i++) c = CRC_T[(c ^ u8[i]) & 255] ^ (c >>> 8); return (c ^ 0xFFFFFFFF) >>> 0; };
+function buildZip(files) {
+  const enc = new TextEncoder(), parts = [], cen = []; let off = 0, cdSize = 0;
+  for (const f of files) {
+    const nm = enc.encode(f.name), len = f.bytes.length, crc = crc32(f.bytes), dt = new Date(f.ms || Date.now());
+    const t = (dt.getHours() << 11) | (dt.getMinutes() << 5) | (dt.getSeconds() >> 1), d = ((dt.getFullYear() - 1980) << 9) | ((dt.getMonth() + 1) << 5) | dt.getDate();
+    const lh = new DataView(new ArrayBuffer(30)); lh.setUint32(0, 0x04034b50, true); lh.setUint16(4, 20, true); lh.setUint16(6, 0x0800, true); lh.setUint16(8, 0, true); lh.setUint16(10, t, true); lh.setUint16(12, d, true); lh.setUint32(14, crc, true); lh.setUint32(18, len, true); lh.setUint32(22, len, true); lh.setUint16(26, nm.length, true); lh.setUint16(28, 0, true);
+    parts.push(lh.buffer, nm, f.bytes);
+    const ch = new DataView(new ArrayBuffer(46)); ch.setUint32(0, 0x02014b50, true); ch.setUint16(4, 20, true); ch.setUint16(6, 20, true); ch.setUint16(8, 0x0800, true); ch.setUint16(10, 0, true); ch.setUint16(12, t, true); ch.setUint16(14, d, true); ch.setUint32(16, crc, true); ch.setUint32(20, len, true); ch.setUint32(24, len, true); ch.setUint16(28, nm.length, true); ch.setUint32(42, off, true);
+    cen.push(ch.buffer, nm); cdSize += 46 + nm.length; off += 30 + nm.length + len;
+  }
+  const end = new DataView(new ArrayBuffer(22)); end.setUint32(0, 0x06054b50, true); end.setUint16(8, files.length, true); end.setUint16(10, files.length, true); end.setUint32(12, cdSize, true); end.setUint32(16, off, true);
+  return new Blob([...parts, ...cen, end.buffer], { type: 'application/zip' });
+}
+async function exportPhotosZip(withOrig) {
+  if (!S.records.length) return toast('Keine Daten vorhanden');
+  if (withOrig && !confirm('Die Originale zeigen Kennzeichen lesbar. Nur für dich zur Prüfung – nicht weitergeben oder hochladen. Fortfahren?')) return;
+  toast('Erstelle ZIP …', 2000);
+  const files = [], p2 = (n) => String(n).padStart(2, '0'), slug = (t) => String(t || 'ohne-Ort').replace(/[^A-Za-z0-9ÄÖÜäöüß_-]+/g, '_').replace(/^_+|_+$/g, '').slice(0, 30) || 'ohne-Ort';
+  let nG = 0, nO = 0;
+  for (const r of S.records) {
+    const dt = new Date(r.timestamp), base = `Fall${String(r.id).padStart(3, '0')}_${dt.getFullYear()}-${p2(dt.getMonth() + 1)}-${p2(dt.getDate())}_${p2(dt.getHours())}${p2(dt.getMinutes())}_${slug(r.road)}${r.houseNumber ? '_' + slug(r.houseNumber) : ''}`;
+    const pics = r.photos && r.photos.length ? r.photos : (r.blurredPhoto ? [{ img: r.blurredPhoto, ts: Date.parse(r.timestamp) }] : []);
+    for (let i = 0; i < pics.length; i++) { files.push({ name: `geschwaerzt/${base}_${i + 1}.jpg`, bytes: new Uint8Array(await (await fetch(pics[i].img)).arrayBuffer()), ms: pics[i].ts || Date.parse(r.timestamp) }); nG++; }
+    if (withOrig && r.hasOrig) for (const o of await origGet(r.id).catch(() => [])) { files.push({ name: `original_NUR_LOKAL/${base}_${o.i + 1}.jpg`, bytes: new Uint8Array(await (await fetch(o.img)).arrayBuffer()), ms: o.ts || Date.parse(r.timestamp) }); nO++; }
+  }
+  if (!files.length) return toast('Keine Fotos vorhanden');
+  const ok = await shareOrDownload(`ParkWatch_Fotos_${new Date().toISOString().slice(0, 10)}${withOrig ? '_mit_Originalen' : ''}.zip`, buildZip(files));
+  if (ok) toast(`ZIP erstellt: ${nG} geschwärzte${nO ? ' + ' + nO + ' Originale' : ''} Fotos`, 4500);
+}
 async function exportCsv(withPlate) {
   if (!S.records.length) return toast('Keine Daten vorhanden');
   const head = ['ID', 'Zeit', 'Straße', 'Hausnr', 'Ort', 'Lat', 'Lon', 'Standort-Quelle', ...(withPlate ? ['Kennzeichen'] : []), 'Fahrzeug', 'Klasse', 'Farbe', 'TBNR', 'Tatbestand', 'Euro', 'Punkte', 'TBNR_geprüft', 'Behinderung', 'Gefährdung', 'Dauer_h', 'Schulweg', 'Rettungsweg', 'Restbreite_cm', 'Notiz'];
@@ -1148,7 +1180,7 @@ async function init() {
   $('tabCapture').onclick = () => switchTab('capture'); $('tabStats').onclick = () => switchTab('stats');
   $('btnPrint').onclick = printReport;
   $('btnPeek').onclick = () => { S.peek = !S.peek; renderPhoto(); }; $('btnFull').onclick = openCurrentFull;
-  $('btnCsvAnon').onclick = () => exportCsv(false); $('btnCsvFull').onclick = () => exportCsv(true); $('btnBackup').onclick = exportBackup; $('btnBackupNow').onclick = exportBackup;
+  $('btnCsvAnon').onclick = () => exportCsv(false); $('btnCsvFull').onclick = () => exportCsv(true); $('btnBackup').onclick = exportBackup; $('btnZip').onclick = () => exportPhotosZip(false); $('btnZipOrig').onclick = () => exportPhotosZip(true); $('btnBackupNow').onclick = exportBackup;
   $('inImport').addEventListener('change', (e) => { if (e.target.files[0]) importBackup(e.target.files[0]); e.target.value = ''; });
   $('repRecords').addEventListener('click', (e) => { const b = e.target.closest('[data-open]'); if (b) openDetail(+b.dataset.open); });
   $('mClose').onclick = () => $('modal').classList.add('hidden');
