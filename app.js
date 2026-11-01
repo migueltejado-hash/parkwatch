@@ -1,5 +1,5 @@
 /* ParkWatch Quartier v2.0 – Anwendungslogik (offline-first, keine Build-Abhängigkeit zur Laufzeit) */
-const APP_VERSION = "2.4.1";
+const APP_VERSION = "2.5.0";
 'use strict';
 
 const $ = (id) => document.getElementById(id);
@@ -109,16 +109,18 @@ const geoCache = new Map(); let geoCtl = null;
 const reverseGeocode = debounce(async (lat, lng) => {
   const key = lat.toFixed(5) + ',' + lng.toFixed(5);
   const apply = (r) => {
+    if (S.cur.addrManual) return;
     S.cur.road = r.road; S.cur.houseNumber = r.house; S.cur.city = r.city;
     S.cur.address = `${r.city}, ${r.road}${r.house ? ' ' + r.house : ''}`; renderLocation(); saveDraftSoon();
   };
   if (geoCache.has(key)) return apply(geoCache.get(key));
   try {
     geoCtl?.abort(); geoCtl = new AbortController();
-    const res = await fetch(`https://nominatim.openstreetmap.org/reverse?format=jsonv2&lat=${lat}&lon=${lng}&zoom=18&addressdetails=1&accept-language=de`, { signal: geoCtl.signal });
-    if (!res.ok) throw new Error(res.status);
-    const a = (await res.json()).address || {};
-    const r = { road: a.road || a.pedestrian || a.footway || a.path || 'Unbenannte Straße', house: a.house_number || '', city: a.city || a.town || a.village || a.municipality || 'Hemsbach' };
+    const rg = async (z) => { const res = await fetch(`https://nominatim.openstreetmap.org/reverse?format=jsonv2&lat=${lat}&lon=${lng}&zoom=${z}&addressdetails=1&accept-language=de`, { signal: geoCtl.signal }); if (!res.ok) throw new Error(res.status); return (await res.json()).address || {}; };
+    const road = (a) => a.road || a.pedestrian || a.footway || a.path || '';
+    const a18 = await rg(18), a17 = await rg(17).catch(() => a18);       // Zoom 17 = nächste Straße; Zoom 18 = nächstes Gebäude (kann in einer Nebenstraße liegen)
+    const r17 = road(a17), r18 = road(a18), a = r17 ? a17 : a18;
+    const r = { road: r17 || r18 || 'Unbenannte Straße', house: r18 && (!r17 || r18 === r17) ? (a18.house_number || '') : '', city: a.city || a.town || a.village || a.municipality || 'Hemsbach' };
     geoCache.set(key, r); apply(r);
   } catch (e) {
     if (e.name === 'AbortError') return;
@@ -127,7 +129,7 @@ const reverseGeocode = debounce(async (lat, lng) => {
 }, 600);
 
 function setLocation(lat, lng, source, accuracy = null, keepView = false) {
-  S.cur.coords = { lat, lng }; S.cur.locSource = source; S.cur.accuracy = accuracy;
+  S.cur.coords = { lat, lng }; S.cur.locSource = source; S.cur.accuracy = accuracy; S.cur.addrManual = false;
   placeMarker(lat, lng); if (!keepView) S.map.setView([lat, lng], Math.max(S.map.getZoom(), 17));
   renderLocation(); reverseGeocode(lat, lng); markDirty();
 }
@@ -137,17 +139,30 @@ function renderLocation() {
   $('locCoords').textContent = c.coords ? `${c.coords.lat.toFixed(5)}, ${c.coords.lng.toFixed(5)}` : '–';
   $('locTime').textContent = fmtDT(c.ts);
   const sb = $('locSource'); sb.textContent = (lab[c.locSource] || 'kein Standort') + (c.accuracy ? ` ±${Math.round(c.accuracy)} m` : '');
-  sb.className = 'px-1.5 rounded border text-[9px] ' + (c.coords ? 'bg-emerald-950 border-emerald-800 text-emerald-300' : 'bg-rose-950 border-rose-800 text-rose-300');
+  const bad = c.coords && c.accuracy && c.accuracy > 30;
+  sb.className = 'px-1.5 rounded border text-[9px] ' + (!c.coords ? 'bg-rose-950 border-rose-800 text-rose-300' : bad ? 'bg-amber-950 border-amber-700 text-amber-300' : 'bg-emerald-950 border-emerald-800 text-emerald-300');
   $('locIcon').className = 'w-9 h-9 rounded-xl flex items-center justify-center flex-shrink-0 border ' + (c.coords ? 'bg-emerald-500/15 text-emerald-400 border-emerald-500/30' : 'bg-rose-950 text-rose-300 border-rose-800');
   $('gmaps').href = c.coords ? `https://www.google.com/maps?q=${c.coords.lat},${c.coords.lng}` : '#';
 }
+let geoWatch = null;
 function locate() {
   if (!navigator.geolocation) { toast('GPS nicht verfügbar – Ort per Karte setzen'); return; }
+  if (geoWatch != null) navigator.geolocation.clearWatch(geoWatch);
+  const cur = S.cur; let best = null, done = false, tm = null;
   $('locAddress').textContent = 'Ermittle Live-Position …';
-  navigator.geolocation.getCurrentPosition(
-    (p) => setLocation(p.coords.latitude, p.coords.longitude, 'gps', p.coords.accuracy),
-    () => { renderLocation(); toast('GPS nicht verfügbar – Ort per Karte setzen', 3500); },
-    { enableHighAccuracy: true, timeout: 10000, maximumAge: 5000 });
+  const finish = () => {
+    if (done) return; done = true; clearTimeout(tm); if (geoWatch != null) { navigator.geolocation.clearWatch(geoWatch); geoWatch = null; }
+    if (S.cur !== cur) return;
+    if (!best) { renderLocation(); toast('GPS nicht verfügbar – Ort per Karte setzen', 3500); }
+    else if (best.coords.accuracy > 30) toast(`Standort ungenau (±${Math.round(best.coords.accuracy)} m) – bitte Pin auf der Karte prüfen/verschieben`, 6000);
+  };
+  tm = setTimeout(finish, 15000);
+  geoWatch = navigator.geolocation.watchPosition((p) => {
+    if (done) return;
+    if (S.cur !== cur || cur.locSource === 'manual') return finish();      // Fall gewechselt oder Pin von Hand gesetzt
+    if (!best || p.coords.accuracy < best.coords.accuracy) { best = p; setLocation(p.coords.latitude, p.coords.longitude, 'gps', p.coords.accuracy); }
+    if (p.coords.accuracy <= 15) finish();                                   // gut genug
+  }, () => finish(), { enableHighAccuracy: true, maximumAge: 0, timeout: 15000 });
 }
 
 /* ---------- Foto-Pipeline ---------- */
@@ -794,6 +809,7 @@ function buildReportHtml(rs) {
   const cases = sorted.map((r, i) => `<section class="case"><h3>Fall ${i + 1} · ${esc(fmtDT(Date.parse(r.timestamp)))}</h3>
     <div class="grid"><div>${(r.photos && r.photos.length ? r.photos : (r.blurredPhoto ? [{ img: r.blurredPhoto }] : [])).map((ph) => `<img src="${ph.img}" alt="Foto (Kennzeichen geschwärzt)">`).join('')}</div>
     <table class="kv"><tr><td>Ort</td><td>${esc(r.address || '')}${r.coords ? ` <span class="m">(${(+r.coords.lat).toFixed(5)}, ${(+r.coords.lng).toFixed(5)})</span>` : ''}</td></tr>
+    <tr><td>Ortung</td><td>${esc({ gps: 'Live-GPS', exif: 'Foto-GPS', manual: 'Karte (manuell)', wiederhergestellt: 'wiederhergestellt' }[r.locSource] || r.locSource || '–')}${r.accuracy ? ' ±' + Math.round(r.accuracy) + ' m' : ''}</td></tr>
     <tr><td>Fahrzeug</td><td>${esc([r.vehicleModel, r.vehicleType, r.vehicleColor].filter(Boolean).join(' · '))}</td></tr>
     <tr><td>Tatbestand</td><td>TBNR ${esc(r.tbnr)} · ${r.fine} €${r.points ? ' · ' + r.points + ' Pkt' : ''}${r.tbVerified ? '' : ' (nicht verifiziert)'}<br>${esc(r.tbnrDesc || '')}</td></tr>
     <tr><td>Umstände</td><td>${[r.flags?.behinderung && 'Behinderung', r.flags?.gefaehrdung && 'Gefährdung', (r.rescueRoute || r.flags?.rettung) && 'Rettungsweg', r.isSchoolRoute && 'Schul-/Kitaweg', r.flags?.dauer && `Dauer > ${r.flags.dauer} Std.`, r.restCm != null && r.restCm !== '' && `Restbreite ${r.restCm} cm`].filter(Boolean).join(' · ') || '–'}</td></tr>
@@ -1093,6 +1109,12 @@ async function init() {
 
   $('inPlate').addEventListener('input', (e) => { S.cur.plate = e.target.value.toUpperCase(); S.cur.plateSource = 'manual'; renderPlateBadge(); markDirty(); });
   $('btnLocate').onclick = locate;
+  $('locAddress').onclick = () => {
+    if (!S.cur.coords) return toast('Erst einen Standort setzen');
+    const v = prompt('Straße und Hausnummer korrigieren:', `${S.cur.road || ''}${S.cur.houseNumber ? ' ' + S.cur.houseNumber : ''}`); if (v == null) return;
+    const t = v.trim(), m = t.match(/^(.*?)\s+(\d+\s?[a-zA-Z]?)$/);
+    S.cur.road = m ? m[1] : t; S.cur.houseNumber = m ? m[2] : ''; S.cur.addrManual = true; S.cur.address = `${S.cur.city || 'Hemsbach'}, ${S.cur.road}${S.cur.houseNumber ? ' ' + S.cur.houseNumber : ''}`; renderLocation(); markDirty();
+  };
   $('btnMapSize').onclick = () => { S.mapBig = !S.mapBig; $('mapWrap').style.height = S.mapBig ? '22rem' : ''; $('mapWrap').classList.toggle('h-36', !S.mapBig); setTimeout(() => S.map.invalidateSize(), 250); };
 
   $('groupChips').addEventListener('click', (e) => { const b = e.target.closest('[data-g]'); if (!b) return; S.cur.group = b.dataset.g; S.cur.extra = false; renderViolation(); markDirty(); });
