@@ -1,5 +1,5 @@
 /* ParkWatch Quartier v2.0 – Anwendungslogik (offline-first, keine Build-Abhängigkeit zur Laufzeit) */
-const APP_VERSION = "2.8.1";
+const APP_VERSION = "2.9.0";
 'use strict';
 
 const $ = (id) => document.getElementById(id);
@@ -578,12 +578,43 @@ function adjustLastBox(f) {
   b.w *= f; b.h *= f; b.x = cx - b.w / 2; b.y = cy - b.h / 2; renderPhoto(); renderThumbs(); markDirty();
 }
 
+/* Auswahlliste „Weitere / eigene Tatbestände“ */
+const ownTb = () => { try { return JSON.parse(localStorage.getItem('pw_own_tb') || '[]'); } catch (e) { return []; } };
+const setOwnTb = (l) => { try { localStorage.setItem('pw_own_tb', JSON.stringify(l.slice(0, 60))); } catch (e) { toast('Speichern nicht möglich (privater Modus?)'); } };
+function applyCustomTb(e) {
+  const c = S.cur; c.group = 'sonst'; c.custom = { tbnr: e.tbnr, text: e.text, euro: String(e.euro), pts: String(e.pts || ''), v: !!e.v };
+  $('cuTbnr').value = c.custom.tbnr; $('cuText').value = c.custom.text; $('cuEuro').value = c.custom.euro; $('cuPts').value = c.custom.pts; renderViolation(); markDirty();
+}
+function openTbPicker() {
+  const ov = document.createElement('div'); ov.style.cssText = 'position:fixed;inset:0;z-index:80;background:#020617;display:flex;flex-direction:column;padding:12px;padding-top:calc(env(safe-area-inset-top,0px) + 12px)';
+  ov.innerHTML = `<div style="max-width:28rem;width:100%;margin:0 auto;display:flex;flex-direction:column;height:100%;gap:8px"><div style="display:flex;gap:8px;align-items:center"><b style="flex:1;color:#e2e8f0;font-size:15px">Weitere Tatbestände</b><button id="tpX" style="width:44px;height:44px;border-radius:12px;background:#1e293b;color:#e2e8f0;font-size:20px;border:0" aria-label="Schließen">✕</button></div>
+    <input id="tpQ" class="inp" placeholder="Suchen: TBNR oder Stichwort (z. B. Radweg, zweiter Reihe)" autocomplete="off">
+    <div id="tpL" style="flex:1;overflow-y:auto;display:flex;flex-direction:column;gap:6px"></div>
+    <p style="font-size:10px;color:#64748b">TBNR/Betrag laut weg.li (01.11.2026). Texte sind Kurzbeschreibungen, nicht der amtliche Wortlaut. <a href="https://www.weg.li/charges" target="_blank" rel="noopener noreferrer" style="color:#22d3ee;text-decoration:underline">Gesamten Katalog auf weg.li durchsuchen</a> – gefundene TBNR dann unter „Eigener Eintrag“ übernehmen und mit „In meine Liste“ dauerhaft ablegen.</p></div>`;
+  document.body.appendChild(ov);
+  const close = () => ov.remove(), q = ov.querySelector('#tpQ'), list = ov.querySelector('#tpL');
+  const draw = () => {
+    const t = q.value.trim().toLowerCase(), own = ownTb().map((e) => ({ ...e, own: true })), all = [...own, ...EXTRA_TB.map((e) => ({ ...e, v: true }))].filter((e) => !t || (e.tbnr + ' ' + e.text).toLowerCase().includes(t));
+    list.innerHTML = all.map((e, i) => `<div style="display:flex;gap:6px"><button data-i="${i}" style="flex:1;text-align:left;background:#0f172a;border:1px solid #1e293b;border-radius:12px;padding:10px;color:#e2e8f0"><div style="font:600 11px ui-monospace,Menlo,monospace;color:${e.own ? '#a78bfa' : '#fbbf24'}">TBNR ${esc(e.tbnr)} · ${esc(String(e.euro))} €${e.pts ? ' · ' + e.pts + ' Pkt' : ''}${e.own ? ' · eigener Eintrag' : ''}</div><div style="font-size:12px;margin-top:2px;line-height:1.35">${esc(e.text)}</div></button>${e.own ? `<button data-del="${esc(e.tbnr)}|${esc(e.text)}" aria-label="Eintrag löschen" style="width:44px;border-radius:12px;background:#1e293b;color:#fb7185;border:0">🗑</button>` : ''}</div>`).join('') || '<div class="d-empty">Keine Treffer – bitte auf weg.li suchen und als eigenen Eintrag anlegen.</div>';
+    list._items = all;
+  };
+  ov.addEventListener('click', (ev) => {
+    if (ev.target.id === 'tpX') return close();
+    const del = ev.target.closest('[data-del]'); if (del) { const [tb, tx] = del.dataset.del.split('|'); if (confirm('Eigenen Eintrag aus der Liste löschen?')) { setOwnTb(ownTb().filter((e) => !(e.tbnr === tb && e.text === tx))); draw(); } return; }
+    const b = ev.target.closest('[data-i]'); if (b) { applyCustomTb(list._items[+b.dataset.i]); close(); }
+  });
+  q.addEventListener('input', draw); draw(); setTimeout(() => q.focus(), 100);
+}
+function saveOwnTb() {
+  const t = S.cur.custom; if (!t.tbnr || !t.text) return toast('TBNR und Text eintragen');
+  const l = ownTb().filter((e) => !(e.tbnr === t.tbnr && e.text === t.text)); l.unshift({ tbnr: t.tbnr, text: t.text, euro: parseInt(t.euro, 10) || 0, pts: parseInt(t.pts, 10) || 0 }); setOwnTb(l); toast('In „Meine Liste“ gespeichert');
+}
 /* ---------- Tatbestand (Zuordnung) ---------- */
 function matchEntry() {
   const c = S.cur, g = group(c.group); if (!g) return null;
   if (g.custom) {
     const t = c.custom; if (!t.tbnr && !t.text) return null;
-    return { entry: { tbnr: t.tbnr || '—', text: t.text || 'Sonstiger Verstoß', euro: parseInt(t.euro, 10) || 0, pts: parseInt(t.pts, 10) || 0, verified: false }, exact: true, group: g };
+    return { entry: { tbnr: t.tbnr || '—', text: t.text || 'Sonstiger Verstoß', euro: parseInt(t.euro, 10) || 0, pts: parseInt(t.pts, 10) || 0, verified: !!t.v }, exact: true, group: g };
   }
   const wantBeh = c.beh || c.gef, wantGef = c.gef, wantExtra = g.extra ? c.extra : false, wantDur = c.dur;
   let best = null, bestScore = -1e9;
@@ -613,7 +644,7 @@ function renderViolation() {
   const note = $('tbNote');
   if (!m.exact) { note.textContent = 'Diese Kombination gibt es im Katalog nicht exakt – nächstliegender Tatbestand gewählt.'; note.classList.remove('hidden'); }
   else if (e.hint) { note.textContent = e.hint; note.classList.remove('hidden'); } else note.classList.add('hidden');
-  $('tbVerified').innerHTML = g.custom ? 'Freier Eintrag – ungeprüft.' : e.verified ? `<i class="fa-solid fa-circle-check text-emerald-500"></i> TBNR/Betrag gegen BKat (weg.li) geprüft · ${esc(g.law)}` : `<i class="fa-solid fa-triangle-exclamation text-amber-400"></i> Nicht vollständig geprüft – vor Behördenkontakt kontrollieren · ${esc(g.law)}`;
+  $('tbVerified').innerHTML = g.custom && !e.verified ? 'Freier Eintrag – ungeprüft.' : g.custom ? '<i class="fa-solid fa-circle-check text-emerald-500"></i> TBNR/Betrag laut weg.li (Kurztext in eigenen Worten, nicht amtlicher Wortlaut)' : e.verified ? `<i class="fa-solid fa-circle-check text-emerald-500"></i> TBNR/Betrag gegen BKat (weg.li) geprüft · ${esc(g.law)}` : `<i class="fa-solid fa-triangle-exclamation text-amber-400"></i> Nicht vollständig geprüft – vor Behördenkontakt kontrollieren · ${esc(g.law)}`;
 }
 
 /* ---------- Fahrzeug ---------- */
@@ -752,16 +783,42 @@ function bar(label, count, total, extra = '') {
   return `<div class="bg-slate-950/60 p-2 rounded-xl border border-slate-800"><div class="flex justify-between text-xs"><span class="font-semibold text-slate-200 truncate pr-2">${esc(label)}</span><span class="font-mono text-emerald-400 font-bold shrink-0">${count} <span class="text-slate-500 font-normal">(${p}%)</span></span></div><div class="w-full bg-slate-800 h-1.5 rounded-full overflow-hidden mt-1"><div class="bg-emerald-500 h-full" style="width:${p}%"></div></div>${extra}</div>`;
 }
 /* ---------- Dashboard (Auswertung) ---------- */
-S.dash = { range: 'all', road: '' };
+S.view = { mode: 'all', anchor: Date.now(), from: '', to: '', road: '', sort: 'new' };
+const MONTHS = ['Januar', 'Februar', 'März', 'April', 'Mai', 'Juni', 'Juli', 'August', 'September', 'Oktober', 'November', 'Dezember'];
+const SORTS = { new: 'Neueste zuerst', old: 'Älteste zuerst', road: 'Straße A–Z', fine: 'Höchster Betrag', tbnr: 'Nach TBNR' };
+const fmtD = (t) => new Date(t).toLocaleDateString('de-DE', { day: '2-digit', month: '2-digit', year: 'numeric' });
+function isoWeek(t) { const d = new Date(t); d.setHours(0, 0, 0, 0); d.setDate(d.getDate() + 3 - ((d.getDay() + 6) % 7)); const w1 = new Date(d.getFullYear(), 0, 4); return [d.getFullYear(), 1 + Math.round(((d - w1) / DAY - 3 + ((w1.getDay() + 6) % 7)) / 7)]; }
+function viewRange() {
+  const v = S.view, d = new Date(v.anchor); d.setHours(0, 0, 0, 0);
+  if (v.mode === 'all') return [0, Infinity];
+  if (v.mode === 'custom') return [v.from ? new Date(v.from + 'T00:00:00').getTime() : 0, v.to ? new Date(v.to + 'T23:59:59.999').getTime() : Infinity];
+  if (v.mode === 'day') return [+d, +d + DAY - 1];
+  if (v.mode === 'week') { d.setDate(d.getDate() - ((d.getDay() + 6) % 7)); const a = +d; d.setDate(d.getDate() + 7); return [a, +d - 1]; }
+  if (v.mode === 'month') return [+new Date(d.getFullYear(), d.getMonth(), 1), +new Date(d.getFullYear(), d.getMonth() + 1, 1) - 1];
+  return [+new Date(d.getFullYear(), 0, 1), +new Date(d.getFullYear() + 1, 0, 1) - 1];
+}
+function viewLabel() {
+  const v = S.view, [a, b] = viewRange(), road = v.road ? ' · ' + v.road : '';
+  const t = { all: 'Alle Fälle', day: new Date(v.anchor).toLocaleDateString('de-DE', { weekday: 'short', day: '2-digit', month: '2-digit', year: 'numeric' }), week: `KW ${isoWeek(v.anchor)[1]}/${isoWeek(v.anchor)[0]} · ${fmtD(a).slice(0, 5)}–${fmtD(b)}`, month: `${MONTHS[new Date(v.anchor).getMonth()]} ${new Date(v.anchor).getFullYear()}`, year: String(new Date(v.anchor).getFullYear()), custom: `${v.from ? fmtD(a) : 'Anfang'} – ${v.to ? fmtD(b) : 'heute'}` }[v.mode];
+  return t + road;
+}
+function stepView(dir) {
+  const v = S.view, d = new Date(v.anchor);
+  if (v.mode === 'day') d.setDate(d.getDate() + dir); else if (v.mode === 'week') d.setDate(d.getDate() + 7 * dir); else if (v.mode === 'month') d.setMonth(d.getMonth() + dir, 1); else if (v.mode === 'year') d.setFullYear(d.getFullYear() + dir, 0, 1);
+  v.anchor = +d;
+}
+/* gefilterte + sortierte Fälle – gilt für Dashboard, Liste, PDF/HTML, CSV und Foto-ZIP (Backup bleibt immer vollständig) */
+function reportRecords(all = S.records) {
+  const v = S.view, [a, b] = viewRange(), out = all.filter((r) => { const t = Date.parse(r.timestamp); return t >= a && t <= b && (!v.road || roadOf(r) === v.road); });
+  const cmp = { new: (x, y) => y.timestamp.localeCompare(x.timestamp), old: (x, y) => x.timestamp.localeCompare(y.timestamp), road: (x, y) => roadOf(x).localeCompare(roadOf(y), 'de') || x.timestamp.localeCompare(y.timestamp), fine: (x, y) => (y.fine || 0) - (x.fine || 0) || x.timestamp.localeCompare(y.timestamp), tbnr: (x, y) => String(x.tbnr).localeCompare(String(y.tbnr)) || x.timestamp.localeCompare(y.timestamp) }[v.sort];
+  return out.sort(cmp);
+}
 const DAY = 864e5, WD = ['Mo', 'Di', 'Mi', 'Do', 'Fr', 'Sa', 'So'], TB = [['Nacht', '22–6', (h) => h >= 22 || h < 6], ['Morgens', '6–10', (h) => h >= 6 && h < 10], ['Mittags', '10–14', (h) => h >= 10 && h < 14], ['Nachm.', '14–18', (h) => h >= 14 && h < 18], ['Abends', '18–22', (h) => h >= 18 && h < 22]];
 const roadOf = (r) => r.road || (r.address || '').split(',')[1]?.replace(/\s\d+\w?$/, '').trim() || 'Unbekannt';
 const brandOf = (r) => r.vehicleBrand || ((r.vehicleModel || '').split(' ')[0] || '').replace(/^Unbekannt$/, '') || '';
 const eur = (v) => Math.round(v).toLocaleString('de-DE') + ' €';
 const countBy = (rs, f) => { const o = {}; rs.forEach((r) => { const k = f(r); if (k) o[k] = (o[k] || 0) + 1; }); return Object.entries(o).sort((a, b) => b[1] - a[1]); };
-function dashFilter(rs) {
-  const d = S.dash, lim = d.range === 'all' ? 0 : Date.now() - +d.range * DAY;
-  return rs.filter((r) => Date.parse(r.timestamp) >= lim && (!d.road || roadOf(r) === d.road));
-}
+function dashFilter(rs) { return reportRecords(rs); }
 function dashHeat(rs) {
   const g = Array.from({ length: 7 }, () => Array(5).fill(0));
   rs.forEach((r) => { const d = new Date(r.timestamp), wd = (d.getDay() + 6) % 7, h = d.getHours(), t = TB.findIndex((b) => b[2](h)); g[wd][t]++; });
@@ -796,11 +853,20 @@ function dTrend(rs) {
   const lbl = nb > 1 ? `<text x="2" y="${Hh - 3}" font-size="9" fill="#64748b">${lab(0)}</text><text x="${W - 2}" y="${Hh - 3}" font-size="9" fill="#64748b" text-anchor="end">${lab(nb - 1)}</text>` : `<text x="${W / 2}" y="${Hh - 3}" font-size="9" fill="#64748b" text-anchor="middle">${lab(0)}</text>`;
   return { svg: `<svg viewBox="0 0 ${W} ${Hh}" width="100%" role="img" aria-label="Fälle im Zeitverlauf"><line x1="0" x2="${W}" y1="${Hh - pad}" y2="${Hh - pad}" stroke="#334155"/>${bars}${lbl}</svg>`, unit: { h: 'pro Stunde', d: 'pro Tag', w: 'pro Woche' }[unit] };
 }
+function filterBar(all, n) {
+  const v = S.view, modes = [['all', 'Alle'], ['day', 'Tag'], ['week', 'Woche'], ['month', 'Monat'], ['year', 'Jahr'], ['custom', 'Zeitraum']];
+  const roads = [...new Set(all.map(roadOf))].sort((a, b) => a.localeCompare(b, 'de'));
+  const nav = v.mode === 'all' || v.mode === 'custom' ? '' : `<div class="d-nav"><button data-step="-1" aria-label="zurück">‹</button><b>${esc(viewLabel().split(' · ')[0])}</b><button data-step="1" aria-label="weiter">›</button><button data-step="0" class="now">heute</button></div>`;
+  const cust = v.mode === 'custom' ? `<div class="d-dates"><label>von<input type="date" id="fFrom" value="${v.from}"></label><label>bis<input type="date" id="fTo" value="${v.to}"></label></div>` : '';
+  return `<div class="d-card"><div class="d-h"><b><i class="fa-solid fa-filter"></i>Auswahl für Auswertung &amp; Export</b><span>${n} von ${all.length} Fällen</span></div>
+    <div class="d-chips">${modes.map(([k, t]) => `<button class="d-chip ${v.mode === k ? 'on' : ''}" data-mode="${k}">${t}</button>`).join('')}</div>${nav}${cust}
+    <div class="d-sel"><select id="fRoad" aria-label="Straße"><option value="">Alle Straßen</option>${roads.map((r) => `<option ${v.road === r ? 'selected' : ''}>${esc(r)}</option>`).join('')}</select>
+    <select id="fSort" aria-label="Sortierung">${Object.entries(SORTS).map(([k, t]) => `<option value="${k}" ${v.sort === k ? 'selected' : ''}>${t}</option>`).join('')}</select></div></div>`;
+}
 function renderDashboard(all) {
   const el = $('dash'); if (!el) return;
-  const rs = dashFilter(all), n = rs.length, d = S.dash, sum = rs.reduce((s, r) => s + (+r.fine || 0), 0);
-  const chips = [['all', 'Alles'], ['30', '30 Tage'], ['7', '7 Tage']].map(([k, t]) => `<button class="d-chip ${d.range === k ? 'on' : ''}" data-range="${k}">${t}</button>`).join('') + (d.road ? `<button class="d-chip on" data-road="">${esc(d.road)} ✕</button>` : '');
-  let h = `<div class="d-card"><div class="d-chips">${chips}</div></div>`;
+  const rs = dashFilter(all), n = rs.length, sum = rs.reduce((s, r) => s + (+r.fine || 0), 0);
+  let h = filterBar(all, n);
   if (!n) { el.innerHTML = h + '<div class="d-card"><div class="d-empty">Keine Fälle in diesem Filter.</div></div>'; return; }
   const ts = rs.map((r) => Date.parse(r.timestamp)), d0 = new Date(Math.min(...ts)).toLocaleDateString('de-DE'), d1 = new Date(Math.max(...ts)).toLocaleDateString('de-DE');
   h += `<div class="d-card d-hero"><div class="d-row"><div><div class="big">${n}</div><div class="sub">${n === 1 ? 'Fall' : 'Fälle'} · ${d0 === d1 ? d0 : d0 + ' – ' + d1}</div></div><div class="r"><b>${eur(sum)}</b><div class="sub">Regelsätze gesamt<br>Ø ${eur(sum / n)} je Fall</div></div></div></div>`;
@@ -849,9 +915,22 @@ function drawDashMap(rs) {
       L.marker(p, { icon: L.divIcon({ className: '', iconSize: [sz, sz], html: `<div style="width:${sz}px;height:${sz}px;border-radius:50%;background:${col};border:3px solid #fff;box-shadow:0 1px 6px #000a;color:#0f172a;font:800 ${sz > 34 ? 15 : 13}px/${sz - 6}px ui-monospace,Menlo,monospace;text-align:center">${c.n}</div>` }) })
         .addTo(m).bindPopup(`<b>${esc(c.road)}</b><br>${c.n} ${c.n === 1 ? 'Fall' : 'Fälle'}${c.sev ? ` · davon ${c.sev} kritisch` : ''}<br>${eur(c.fine)} · zuletzt ${new Date(c.last).toLocaleDateString('de-DE')}`);
     });
-    if (ll.length > 1) m.fitBounds(ll, { padding: [34, 34], maxZoom: 18 }); else m.setView(ll[0], 18);
-    setTimeout(() => { m.invalidateSize(); }, 150);
+    if (ll.length > 1) m.fitBounds(ll, { padding: [34, 34], maxZoom: 18, animate: false }); else m.setView(ll[0], 18);
+    setTimeout(() => { if (S.dmap === m && m._loaded) m.invalidateSize(); }, 150);
   } catch (e) { console.warn('Dashboard-Karte', e); }
+}
+function renderRecordList() {
+  const rs = reportRecords(S.records);
+  $('repRecords').innerHTML = rs.map((r) => `
+    <button data-open="${r.id}" class="w-full text-left bg-slate-900 border border-slate-800 rounded-xl p-2.5 flex items-center gap-3 active:scale-[0.99]">
+      <div class="w-14 h-14 rounded-lg bg-slate-950 overflow-hidden flex-shrink-0 border border-slate-800">${r.blurredPhoto ? `<img src="${r.blurredPhoto}" class="w-full h-full object-cover" alt="">` : '<div class="w-full h-full flex items-center justify-center text-slate-600"><i class="fa-solid fa-image"></i></div>'}</div>
+      <div class="min-w-0 flex-1"><div class="text-xs font-semibold text-slate-200 truncate">${esc(r.vehicleModel)} <span class="font-mono text-emerald-400 text-[10px]">${esc(r.licensePlate || '')}</span></div>
+      <div class="text-[10px] text-amber-400 font-mono">TBNR ${esc(r.tbnr)} · ${r.fine} €${r.tbVerified ? '' : ' ⚠'}</div>
+      <div class="text-[10px] text-slate-400 truncate">${esc(r.address)} · ${fmtDT(Date.parse(r.timestamp))}${r.isSchoolRoute ? ' · <span class="text-rose-400">Schulweg</span>' : ''}</div>
+      ${r.notes ? `<div class="text-[10px] text-slate-300 mt-0.5" style="display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden"><i class="fa-solid fa-note-sticky text-slate-500 mr-1"></i>${esc(r.notes)}</div>` : ''}</div>
+      <i class="fa-solid fa-chevron-right text-xs text-slate-500"></i></button>`).join('');
+  const cnt = $('repCount'); if (cnt) cnt.textContent = `${rs.length} von ${S.records.length}`;
+  if (!rs.length) $('repRecords').innerHTML = '<div class="text-center py-6 text-slate-500 text-xs">Keine Fälle in dieser Auswahl.</div>';
 }
 async function refreshStats() {
   const rs = (S.records = (await dbAll()).sort((a, b) => a.timestamp.localeCompare(b.timestamp))); const n = rs.length;
@@ -863,14 +942,7 @@ async function refreshStats() {
   const d0 = new Date(rs[0].timestamp), d1 = new Date(rs[n - 1].timestamp);
   $('repPeriod').textContent = `${d0.toLocaleDateString('de-DE')} – ${d1.toLocaleDateString('de-DE')} · ${n} ${n === 1 ? 'Fall' : 'Fälle'}`;
   renderDashboard(rs);
-  $('repRecords').innerHTML = rs.slice().reverse().map((r) => `
-    <button data-open="${r.id}" class="w-full text-left bg-slate-900 border border-slate-800 rounded-xl p-2.5 flex items-center gap-3 active:scale-[0.99]">
-      <div class="w-14 h-14 rounded-lg bg-slate-950 overflow-hidden flex-shrink-0 border border-slate-800">${r.blurredPhoto ? `<img src="${r.blurredPhoto}" class="w-full h-full object-cover" alt="">` : '<div class="w-full h-full flex items-center justify-center text-slate-600"><i class="fa-solid fa-image"></i></div>'}</div>
-      <div class="min-w-0 flex-1"><div class="text-xs font-semibold text-slate-200 truncate">${esc(r.vehicleModel)} <span class="font-mono text-emerald-400 text-[10px]">${esc(r.licensePlate || '')}</span></div>
-      <div class="text-[10px] text-amber-400 font-mono">TBNR ${esc(r.tbnr)} · ${r.fine} €${r.tbVerified ? '' : ' ⚠'}</div>
-      <div class="text-[10px] text-slate-400 truncate">${esc(r.address)} · ${fmtDT(Date.parse(r.timestamp))}${r.isSchoolRoute ? ' · <span class="text-rose-400">Schulweg</span>' : ''}</div>
-      ${r.notes ? `<div class="text-[10px] text-slate-300 mt-0.5" style="display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden"><i class="fa-solid fa-note-sticky text-slate-500 mr-1"></i>${esc(r.notes)}</div>` : ''}</div>
-      <i class="fa-solid fa-chevron-right text-xs text-slate-500"></i></button>`).join('');
+  renderRecordList();
 }
 function openDetail(id) {
   const r = S.records.find((x) => x.id === id); if (!r) return;
@@ -896,7 +968,7 @@ async function editRecord(r) {
   c.plate = r.licensePlate || ''; c.plateSource = r.plateSource || 'manual'; c.brand = r.vehicleBrand || ''; c.model = (r.vehicleModel || '').replace(r.vehicleBrand || '', '').trim(); c.vtype = r.vehicleType || 'PKW'; c.color = r.vehicleColor || '';
   c.group = r.group || 'gehweg'; c.beh = !!r.flags?.behinderung && !r.flags?.gefaehrdung; c.gef = !!r.flags?.gefaehrdung; c.extra = !!r.flags?.rettung; c.dur = r.flags?.dauer || 0; c.durManual = true;
   c.cloudId = r.cloudId || ''; c.school = !!r.isSchoolRoute; c.rescue = !!r.rescueRoute; c.restCm = r.restCm ?? ''; c.notes = r.notes || '';
-  if (c.group === 'sonst') c.custom = { tbnr: r.tbnr, text: r.tbnrDesc, euro: String(r.fine), pts: String(r.points || '') };
+  if (c.group === 'sonst') c.custom = { tbnr: r.tbnr, text: r.tbnrDesc, euro: String(r.fine), pts: String(r.points || ''), v: !!r.tbVerified };
   const os = r.hasOrig ? await origGet(r.id).catch(() => []) : [];
   if (os.length) for (const o of os) { const cv = await canvasFromUrl(o.img); c.photos.push({ orig: cv, origUrl: o.img, boxes: o.boxes || [], ts: o.ts, out: null, locked: false, doc: !!o.doc }); }
   else for (const p of (r.photos || [])) { const cv = await canvasFromUrl(p.img); c.photos.push({ orig: cv, origUrl: p.img, boxes: [], ts: p.ts, out: p.img, locked: true }); }
@@ -942,12 +1014,20 @@ function buildReportHtml(rs) {
 }
 function loadJsPdf() { return new Promise((res, rej) => { if (window.jspdf) return res(); const el = document.createElement('script'); el.src = 'vendor/jspdf.min.js'; el.onload = res; el.onerror = () => rej(new Error('PDF-Modul nicht geladen')); document.head.appendChild(el); }); }
 const imgSize = (u) => new Promise((res) => { const im = new Image(); im.onload = () => res([im.naturalWidth, im.naturalHeight]); im.onerror = () => res([4, 3]); im.src = u; });
-async function buildReportPdf(rs) {
+const pdfImgCache = new Map();
+async function pdfImg(u, maxPx = 1000) {   // verkleinert Fotos fürs PDF (Dateigröße), merkt sich Ergebnis
+  if (pdfImgCache.has(u)) return pdfImgCache.get(u);
+  const im = await new Promise((res) => { const x = new Image(); x.onload = () => res(x); x.onerror = () => res(null); x.src = u; });
+  let o = { u, w: 4, h: 3 };
+  if (im) { const k = Math.min(1, maxPx / Math.max(im.naturalWidth, im.naturalHeight)), c = document.createElement('canvas'); c.width = Math.round(im.naturalWidth * k); c.height = Math.round(im.naturalHeight * k); c.getContext('2d').drawImage(im, 0, 0, c.width, c.height); o = { u: c.toDataURL('image/jpeg', 0.8), w: c.width, h: c.height }; }
+  pdfImgCache.set(u, o); return o;
+}
+async function buildReportPdf(rs, order = 'old') {
   await loadJsPdf();
   const { jsPDF } = window.jspdf, doc = new jsPDF({ unit: 'mm', format: 'a4' }), W = 210, H = 297, M = 15, CW = W - 2 * M;
-  const sorted = rs.slice().sort((a, b) => Date.parse(a.timestamp) - Date.parse(b.timestamp)), n = sorted.length;
-  const d0 = fmtDT(Date.parse(sorted[0].timestamp)).split(',')[0], d1 = fmtDT(Date.parse(sorted[n - 1].timestamp)).split(',')[0];
-  const cnt = (f) => sorted.filter(f).length, sum = sorted.reduce((t, r) => t + (+r.fine || 0), 0);
+  const chrono = rs.slice().sort((a, b) => a.timestamp.localeCompare(b.timestamp)), n = chrono.length;
+  const d0 = fmtDT(Date.parse(chrono[0].timestamp)).split(',')[0], d1 = fmtDT(Date.parse(chrono[n - 1].timestamp)).split(',')[0];
+  const cnt = (f) => chrono.filter(f).length, sum = chrono.reduce((t, r) => t + (+r.fine || 0), 0);
   const noKz = (t) => (t || '').replace(/\b[A-ZÄÖÜ]{1,3}[ -]?[A-Z]{1,2}[ -]?\d{1,4}[EH]?\b/g, '[Kz]');
   let y = M;
   const need = (h) => { if (y + h > H - M - 8) { doc.addPage(); y = M; } };
@@ -955,35 +1035,43 @@ async function buildReportPdf(rs) {
   const para = (t, x, w, size, bold, color) => { doc.setFont('helvetica', bold ? 'bold' : 'normal'); doc.setFontSize(size); doc.setTextColor(color || 20); const ls = doc.splitTextToSize(String(t), w), lh = size * 0.42; ls.forEach((l, k) => doc.text(l, x, y + k * lh)); return ls.length * lh; };
   const h2 = (t) => { need(14); y += 4; text(t, M, 13, true); y += 2; doc.setDrawColor(150); doc.line(M, y, W - M, y); y += 6; };
   text('ParkWatch Quartier – Verkehrs- & Sicherheitsbericht', M, 17, true); y += 7;
-  y += para(`Zeitraum ${d0} – ${d1} · ${n} ${n === 1 ? 'Fall' : 'Fälle'} · erstellt ${new Date().toLocaleDateString('de-DE')} · Kennzeichen anonymisiert`, M, CW, 9, false, 90) + 2;
+  y += para(`Auswahl: ${viewLabel()} · ${n} ${n === 1 ? 'Fall' : 'Fälle'} (${d0 === d1 ? d0 : d0 + ' – ' + d1}) · sortiert: ${SORTS[order] || ''} · erstellt ${new Date().toLocaleDateString('de-DE')} · Kennzeichen anonymisiert`, M, CW, 9, false, 90) + 2;
   h2('Auswertung');
-  const kp = [[n, 'Fälle'], [cnt((r) => r.flags?.behinderung || r.flags?.gefaehrdung), 'mit Behinderung/Gefährdung'], [cnt((r) => r.isSchoolRoute), 'Schul-/Kitaweg'], [cnt((r) => r.rescueRoute || r.flags?.rettung), 'Rettungsweg'], [cnt((r) => /gewerb|groß|LKW|Transporter|Anhänger/i.test(r.vehicleType || '')), 'gewerbl./groß'], [sum + ' €', 'Summe Regelsätze (Orientierung)']];
+  const isRescue = (r) => r.rescueRoute || r.flags?.rettung || r.group === 'feuerwehr' || r.group === 'enge';
+  const kp = [[n, 'Fälle'], [cnt((r) => r.flags?.behinderung || r.flags?.gefaehrdung), 'mit Behinderung/Gefährdung'], [cnt((r) => r.isSchoolRoute), 'Schul-/Kitaweg'], [cnt(isRescue), 'Rettungsweg'], [cnt((r) => ['LKW', 'Transporter', 'Anhänger', 'Wohnmobil'].includes(r.vehicleType)), 'gewerbl./groß'], [sum + ' €', 'Summe Regelsätze (Orientierung)']];
   const bw = (CW - 8) / 3; doc.setDrawColor(170);
   kp.forEach((k, i) => { const bx = M + (i % 3) * (bw + 4), by = y + Math.floor(i / 3) * 20; doc.roundedRect(bx, by, bw, 17, 1.5, 1.5); doc.setFont('helvetica', 'bold'); doc.setFontSize(15); doc.setTextColor(20); doc.text(String(k[0]), bx + 3, by + 7); doc.setFont('helvetica', 'normal'); doc.setFontSize(8); doc.setTextColor(80); doc.text(doc.splitTextToSize(k[1], bw - 5), bx + 3, by + 11.5); });
   y += 42;
-  const roads = {}; sorted.forEach((r) => { const k = r.road || r.address || 'unbekannt'; roads[k] = (roads[k] || 0) + 1; });
-  h2('Kernaussagen'); dashInsights(sorted).forEach((t) => { need(10); doc.setFillColor(16, 185, 129); doc.circle(M + 1.5, y - 1.2, 0.9, 'F'); y += para(t, M + 5, CW - 5, 9.5, false) + 2.2; });
+  h2('Kernaussagen'); dashInsights(chrono).forEach((t) => { need(10); doc.setFillColor(16, 185, 129); doc.circle(M + 1.5, y - 1.2, 0.9, 'F'); y += para(t, M + 5, CW - 5, 9.5, false) + 2.2; });
+  const roads = {}; chrono.forEach((r) => { const k = roadOf(r); roads[k] = (roads[k] || 0) + 1; });
   h2('Hotspots (Straßen)');
   Object.entries(roads).sort((a, b) => b[1] - a[1]).slice(0, 10).forEach(([k, v]) => { need(6); text(k, M, 10); doc.text(`${v}`, W - M - 22, y, { align: 'right' }); doc.text(`${Math.round(v / n * 100)} %`, W - M, y, { align: 'right' }); y += 5.5; });
   h2('Erfasste Fälle');
+  const list = chrono.slice().sort({ new: (a, b) => b.timestamp.localeCompare(a.timestamp), old: (a, b) => a.timestamp.localeCompare(b.timestamp), road: (a, b) => roadOf(a).localeCompare(roadOf(b), 'de') || a.timestamp.localeCompare(b.timestamp), fine: (a, b) => (b.fine || 0) - (a.fine || 0), tbnr: (a, b) => String(a.tbnr).localeCompare(String(b.tbnr)) || a.timestamp.localeCompare(b.timestamp) }[order] || (() => 0));
+  const PW = 50, TX = M + PW + 4, TW = W - M - TX, LW = 20;
   for (let i = 0; i < n; i++) {
-    const r = sorted[i];
-    const um = [r.flags?.behinderung && 'Behinderung', r.flags?.gefaehrdung && 'Gefährdung', (r.rescueRoute || r.flags?.rettung) && 'Rettungsweg', r.isSchoolRoute && 'Schul-/Kitaweg', r.flags?.dauer && `Dauer > ${r.flags.dauer} Std.`, r.restCm != null && r.restCm !== '' && `Restbreite ${r.restCm} cm`].filter(Boolean).join(' · ');
+    const r = list[i];
+    const um = [r.flags?.behinderung && 'Behinderung', r.flags?.gefaehrdung && 'Gefährdung', isRescue(r) && 'Rettungsweg', r.isSchoolRoute && 'Schul-/Kitaweg', r.flags?.dauer && `Dauer > ${r.flags.dauer} Std.`, r.restCm != null && r.restCm !== '' && `Restbreite ${r.restCm} cm`].filter(Boolean).join(' · ');
     const rows = [['Ort', (r.address || '') + (r.coords ? ` (${(+r.coords.lat).toFixed(5)}, ${(+r.coords.lng).toFixed(5)})` : '')],
       ['Ortung', ({ gps: 'Live-GPS', exif: 'Foto-GPS', manual: 'Karte (manuell)', wiederhergestellt: 'wiederhergestellt' }[r.locSource] || r.locSource || '–') + (r.accuracy ? ' ±' + Math.round(r.accuracy) + ' m' : '')],
       ['Fahrzeug', [r.vehicleModel, r.vehicleType, r.vehicleColor].filter(Boolean).join(' · ')],
       ['Tatbestand', `TBNR ${r.tbnr} · ${r.fine} €${r.points ? ' · ' + r.points + ' Pkt' : ''}${r.tbVerified ? '' : ' (nicht verifiziert)'}\n${r.tbnrDesc || ''}`],
       ['Umstände', um || '–']]; if (r.notes) rows.push(['Notiz', noKz(r.notes)]);
-    doc.setFontSize(9.5); const hs = rows.map(([, v]) => doc.splitTextToSize(String(v), CW - 28).length * 4 + 1.6);
-    need(10 + hs.reduce((a, b) => a + b, 0) + 40);   // Kopf + Angaben + mind. erste Fotozeile zusammenhalten
-    y += 2; text(`Fall ${i + 1} · ${fmtDT(Date.parse(r.timestamp))}`, M, 11, true); y += 5;
-    rows.forEach(([k, v], q) => { need(hs[q]); text(k, M, 9.5, false, 100); const hh = para(v, M + 28, CW - 28, 9.5, false); y += Math.max(hh, 4) + 1.6; });
-    const pics = (r.photos && r.photos.length ? r.photos : r.blurredPhoto ? [{ img: r.blurredPhoto }] : []), pw = (CW - 8) / 3;
-    for (let k = 0; k < pics.length; k += 3) {
-      const row = pics.slice(k, k + 3), sz = await Promise.all(row.map((p) => imgSize(p.img))), hh = Math.min(70, Math.max(...sz.map(([w, h]) => pw * h / w)));
-      need(hh + 2); row.forEach((p, q) => { const [w, h] = sz[q], ww = Math.min(pw, hh * w / h), th = ww * h / w; doc.addImage(p.img, 'JPEG', M + q * (pw + 4), y, ww, th); }); y += hh + 3;
+    doc.setFontSize(9); const hs = rows.map(([, v]) => doc.splitTextToSize(String(v), TW - LW).length * 3.8 + 1.8), th = hs.reduce((a, b) => a + b, 0);
+    const pics = (r.photos && r.photos.length ? r.photos : r.blurredPhoto ? [{ img: r.blurredPhoto }] : []), ims = [];
+    for (const p of pics) ims.push(await pdfImg(p.img));
+    let ph = 0, pw = 0; if (ims[0]) { pw = Math.min(PW, 72 * ims[0].w / ims[0].h); ph = pw * ims[0].h / ims[0].w; }
+    const sw = 30, extra = ims.slice(1), extraRows = Math.ceil(extra.length / 5), blockH = 7 + Math.max(th, ph) + (extraRows ? extraRows * 42 + 2 : 0) + 6;
+    need(7 + Math.max(th, ph) + 8);
+    y += 1; text(`Fall ${i + 1} · ${fmtDT(Date.parse(r.timestamp))}`, M, 11, true); y += 3;
+    const top = y; if (ims[0]) doc.addImage(ims[0].u, 'JPEG', M, top, pw, ph);
+    rows.forEach(([k, v], q) => { y = top + 3 + hs.slice(0, q).reduce((a, b) => a + b, 0); text(k, TX, 9, false, 100); para(v, TX + LW, TW - LW, 9, false); });
+    y = top + Math.max(th + 3, ph) + 3;
+    for (let k = 0; k < extra.length; k += 5) {
+      const row = extra.slice(k, k + 5); need(44); let x = M;
+      row.forEach((p) => { const w = Math.min(sw, 40 * p.w / p.h), h = w * p.h / p.w; doc.addImage(p.u, 'JPEG', x, y, w, h); x += sw + 3; }); y += 42;
     }
-    y += 3; need(4); doc.setDrawColor(210); doc.line(M, y, W - M, y); y += 4;
+    y += 1; need(4); doc.setDrawColor(210); doc.line(M, y, W - M, y); y += 4;
   }
   need(14); y += 2; para('Hinweis: Die App ist eine private Dokumentationshilfe. Tatbestände und Beträge sind Orientierungswerte; die Bewertung obliegt den zuständigen Behörden.', M, CW, 8, false, 100);
   const pages = doc.getNumberOfPages(); for (let p = 1; p <= pages; p++) { doc.setPage(p); doc.setFontSize(8); doc.setTextColor(120); doc.text(`ParkWatch Quartier · Seite ${p}/${pages}`, W / 2, H - 8, { align: 'center' }); }
@@ -993,13 +1081,14 @@ async function printReport() {
   if (!S.records.length) return toast('Keine Fälle vorhanden');
   toast('PDF wird erstellt …', 2500);
   try {
-    const blob = await buildReportPdf(S.records);
+    const rs = reportRecords(); if (!rs.length) return toast('In dieser Auswahl gibt es keine Fälle');
+    const blob = await buildReportPdf(rs.slice().sort((a, b) => a.timestamp.localeCompare(b.timestamp)), S.view.sort);
     if (await shareOrDownload(`ParkWatch_Bericht_${new Date().toISOString().slice(0, 10)}.pdf`, blob)) toast('PDF erstellt – in „Dateien“ sichern oder direkt teilen/drucken', 4500);
   } catch (e) { console.warn(e); toast('PDF fehlgeschlagen: ' + e.message, 5000); }
 }
 async function exportReportHtml() {
-  if (!S.records.length) return toast('Keine Fälle vorhanden');
-  await shareOrDownload(`ParkWatch_Bericht_${new Date().toISOString().slice(0, 10)}.html`, new Blob([buildReportHtml(S.records)], { type: 'text/html;charset=utf-8' }));
+  if (!reportRecords().length) return toast('In dieser Auswahl gibt es keine Fälle');
+  await shareOrDownload(`ParkWatch_Bericht_${new Date().toISOString().slice(0, 10)}.html`, new Blob([buildReportHtml(reportRecords())], { type: 'text/html;charset=utf-8' }));
 }
 /* Vollbild-Ansicht (Antippen = Zoom, Wischen = verschieben); mehrere Bilder nacheinander */
 function openLightbox(srcs, caption) {
@@ -1032,12 +1121,12 @@ function buildZip(files) {
   return new Blob([...parts, ...cen, end.buffer], { type: 'application/zip' });
 }
 async function exportPhotosZip(withOrig) {
-  if (!S.records.length) return toast('Keine Daten vorhanden');
+  if (!reportRecords().length) return toast('In dieser Auswahl gibt es keine Fälle');
   if (withOrig && !confirm('Die Originale zeigen Kennzeichen lesbar. Nur für dich zur Prüfung – nicht weitergeben oder hochladen. Fortfahren?')) return;
   toast('Erstelle ZIP …', 2000);
   const files = [], p2 = (n) => String(n).padStart(2, '0'), slug = (t) => String(t || 'ohne-Ort').replace(/[^A-Za-z0-9ÄÖÜäöüß_-]+/g, '_').replace(/^_+|_+$/g, '').slice(0, 30) || 'ohne-Ort';
   let nG = 0, nO = 0;
-  for (const r of S.records) {
+  for (const r of reportRecords()) {
     const dt = new Date(r.timestamp), base = `Fall${String(r.id).padStart(3, '0')}_${dt.getFullYear()}-${p2(dt.getMonth() + 1)}-${p2(dt.getDate())}_${p2(dt.getHours())}${p2(dt.getMinutes())}_${slug(r.road)}${r.houseNumber ? '_' + slug(r.houseNumber) : ''}`;
     const pics = r.photos && r.photos.length ? r.photos : (r.blurredPhoto ? [{ img: r.blurredPhoto, ts: Date.parse(r.timestamp) }] : []);
     for (let i = 0; i < pics.length; i++) { files.push({ name: `geschwaerzt/${base}_${i + 1}.jpg`, bytes: new Uint8Array(await (await fetch(pics[i].img)).arrayBuffer()), ms: pics[i].ts || Date.parse(r.timestamp) }); nG++; }
@@ -1048,9 +1137,9 @@ async function exportPhotosZip(withOrig) {
   if (ok) toast(`ZIP erstellt: ${nG} geschwärzte${nO ? ' + ' + nO + ' Originale' : ''} Fotos`, 4500);
 }
 async function exportCsv(withPlate) {
-  if (!S.records.length) return toast('Keine Daten vorhanden');
+  if (!reportRecords().length) return toast('In dieser Auswahl gibt es keine Fälle');
   const head = ['ID', 'Zeit', 'Straße', 'Hausnr', 'Ort', 'Lat', 'Lon', 'Standort-Quelle', ...(withPlate ? ['Kennzeichen'] : []), 'Fahrzeug', 'Klasse', 'Farbe', 'TBNR', 'Tatbestand', 'Euro', 'Punkte', 'TBNR_geprüft', 'Behinderung', 'Gefährdung', 'Dauer_h', 'Schulweg', 'Rettungsweg', 'Restbreite_cm', 'Notiz'];
-  const rows = S.records.map((r) => [r.id, r.timestamp, r.road, r.houseNumber, r.city, r.coords.lat, r.coords.lng, r.locSource, ...(withPlate ? [r.licensePlate] : []), r.vehicleModel, r.vehicleType, r.vehicleColor, r.tbnr, r.tbnrDesc, r.fine, r.points || 0, r.tbVerified ? 'ja' : 'nein', r.flags?.behinderung ? 'ja' : 'nein', r.flags?.gefaehrdung ? 'ja' : 'nein', r.flags?.dauer || 0, r.isSchoolRoute ? 'ja' : 'nein', r.rescueRoute || r.flags?.rettung ? 'ja' : 'nein', r.restCm ?? '', withPlate ? r.notes : (r.notes || '').replace(/\b[A-ZÄÖÜ]{1,3}[ -]?[A-Z]{1,2}[ -]?\d{1,4}[EH]?\b/g, '[Kz]')]);
+  const rows = reportRecords().map((r) => [r.id, r.timestamp, r.road, r.houseNumber, r.city, r.coords.lat, r.coords.lng, r.locSource, ...(withPlate ? [r.licensePlate] : []), r.vehicleModel, r.vehicleType, r.vehicleColor, r.tbnr, r.tbnrDesc, r.fine, r.points || 0, r.tbVerified ? 'ja' : 'nein', r.flags?.behinderung ? 'ja' : 'nein', r.flags?.gefaehrdung ? 'ja' : 'nein', r.flags?.dauer || 0, r.isSchoolRoute ? 'ja' : 'nein', r.rescueRoute || r.flags?.rettung ? 'ja' : 'nein', r.restCm ?? '', withPlate ? r.notes : (r.notes || '').replace(/\b[A-ZÄÖÜ]{1,3}[ -]?[A-Z]{1,2}[ -]?\d{1,4}[EH]?\b/g, '[Kz]')]);
   const csv = '﻿' + [head, ...rows].map((r) => r.map(csvCell).join(';')).join('\r\n');
   await shareOrDownload(`ParkWatch_${withPlate ? 'mitKz' : 'anonym'}_${new Date().toISOString().slice(0, 10)}.csv`, new Blob([csv], { type: 'text/csv;charset=utf-8' }));
 }
@@ -1321,7 +1410,7 @@ async function init() {
   $('togGef').addEventListener('change', (e) => { S.cur.gef = e.target.checked; if (e.target.checked) S.cur.beh = true; renderViolation(); markDirty(); });
   $('togExtra').addEventListener('change', (e) => { S.cur.extra = e.target.checked; renderViolation(); markDirty(); });
   $('durChips').addEventListener('click', (e) => { const b = e.target.closest('[data-dur]'); if (!b) return; S.cur.dur = +b.dataset.dur; S.cur.durManual = true; $('durAuto').textContent = ''; renderViolation(); markDirty(); });
-  [['cuTbnr', 'tbnr'], ['cuText', 'text'], ['cuEuro', 'euro'], ['cuPts', 'pts']].forEach(([id, k]) => $(id).addEventListener('input', (e) => { S.cur.custom[k] = e.target.value; renderViolation(); markDirty(); }));
+  [['cuTbnr', 'tbnr'], ['cuText', 'text'], ['cuEuro', 'euro'], ['cuPts', 'pts']].forEach(([id, k]) => $(id).addEventListener('input', (e) => { S.cur.custom[k] = e.target.value; S.cur.custom.v = false; renderViolation(); markDirty(); }));
 
   $('brandPills').addEventListener('click', (e) => { const b = e.target.closest('[data-brand]'); if (b) pickBrand(b.dataset.brand); });
   $('modelPills').addEventListener('click', (e) => { const b = e.target.closest('[data-model]'); if (!b) return; S.cur.model = b.dataset.model; S.cur.manual.model = true; renderVehicle(); markDirty(); });
@@ -1340,12 +1429,17 @@ async function init() {
   $('btnSave').onclick = save; $('btnNew').onclick = () => { if (S.dirty && !S.savedId && (S.cur.photos.length || S.cur.plate) && !confirm('Ungespeicherten Fall verwerfen?')) return; newCase(); };
   $('tabCapture').onclick = () => switchTab('capture'); $('tabStats').onclick = () => switchTab('stats');
   $('btnPrint').onclick = printReport;
+  const reDash = () => { renderDashboard(S.records); renderRecordList(); };
   $('dash').addEventListener('click', (e) => {
-    const r = e.target.closest('[data-range]'), q = e.target.closest('[data-road]');
-    if (r) S.dash.range = r.dataset.range; else if (q) S.dash.road = S.dash.road === q.dataset.road ? '' : q.dataset.road; else return;
-    renderDashboard(S.records);
+    const m = e.target.closest('[data-mode]'), st = e.target.closest('[data-step]'), q = e.target.closest('[data-road]');
+    if (m) { S.view.mode = m.dataset.mode; S.view.anchor = Date.now(); } else if (st) { +st.dataset.step ? stepView(+st.dataset.step) : (S.view.anchor = Date.now()); } else if (q) S.view.road = S.view.road === q.dataset.road ? '' : q.dataset.road; else return;
+    reDash();
   });
-  $('btnRepHtml').onclick = exportReportHtml;
+  $('dash').addEventListener('change', (e) => {
+    const t = e.target; if (t.id === 'fRoad') S.view.road = t.value; else if (t.id === 'fSort') S.view.sort = t.value; else if (t.id === 'fFrom') S.view.from = t.value; else if (t.id === 'fTo') S.view.to = t.value; else return;
+    reDash();
+  });
+  $('btnRepHtml').onclick = exportReportHtml; $('btnTbList').onclick = openTbPicker; $('btnTbSave').onclick = saveOwnTb;
   $('btnPeek').onclick = () => { S.peek = !S.peek; renderPhoto(); }; $('btnFull').onclick = openCurrentFull;
   $('btnCsvAnon').onclick = () => exportCsv(false); $('btnCsvFull').onclick = () => exportCsv(true); $('btnBackup').onclick = exportBackup; $('btnZip').onclick = () => exportPhotosZip(false); $('btnZipOrig').onclick = () => exportPhotosZip(true); $('btnBackupNow').onclick = exportBackup;
   $('inImport').addEventListener('change', (e) => { if (e.target.files[0]) importBackup(e.target.files[0]); e.target.value = ''; });

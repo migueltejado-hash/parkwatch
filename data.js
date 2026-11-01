@@ -56,7 +56,7 @@ const TATBESTAENDE = [
       { tbnr: '112396', text: 'Sie parkten Ihr Kraftfahrzeug mit einer zulässigen Gesamtmasse von mehr als 7,5 t regelmäßig in einem besonderen Gebiet, obwohl dies für diese Zeit verboten war.', euro: 30, pts: 0, dur: 0, verified: false,
         hint: 'Betrag nach 2021 nicht bestätigt (30 € laut Katalog 2014). Anhänger > 2 t: eigene TBNR.' }
     ] },
-  { id: 'sonst', icon: 'fa-pen', label: 'Sonstiger Verstoß (frei)', law: '',
+  { id: 'sonst', icon: 'fa-pen', label: 'Weitere / eigene Tatbestände', law: '',
     custom: true, items: []
   }
 ];
@@ -136,3 +136,26 @@ const BRANDS = {
   'Vespa/Piaggio': ['Zweirad', ['Vespa', 'Liberty', 'MP3']],
   'KTM': ['Zweirad', ['Duke', 'Adventure', 'EXC']]
 };
+
+/* Weitere Tatbestände (Auswahlliste „Weitere / eigene“): TBNR, Betrag und Punkte gemäß weg.li/charges (BKat, Halt- und Parkverstoß,
+ * abgerufen 01.11.2026). `text` ist eine KURZBESCHREIBUNG in eigenen Worten – NICHT der amtliche Wortlaut. Vollständige Liste: https://www.weg.li/charges */
+const EXTRA_TB = [
+  { tbnr: '112460', text: 'Halten in zweiter Reihe', euro: 55, pts: 0 },
+  { tbnr: '112464', text: 'Parken in zweiter Reihe', euro: 55, pts: 0 },
+  { tbnr: '112474', text: 'Parken auf einem Radweg (ohne Beschilderung)', euro: 55, pts: 0 },
+  { tbnr: '112572', text: 'Halten auf einem Radweg (ohne Beschilderung) und Gefährdung Anderer', euro: 80, pts: 0 },
+  { tbnr: '112573', text: 'Halten auf einem Radweg (ohne Beschilderung), es kam zum Unfall', euro: 100, pts: 0 },
+  { tbnr: '112552', text: 'Halten auf dem Gehweg und Gefährdung Anderer', euro: 70, pts: 0 },
+  { tbnr: '112553', text: 'Halten auf dem Gehweg, es kam zum Unfall', euro: 90, pts: 0 },
+  { tbnr: '112606', text: 'Parken in scharfer Kurve, Durchfahrt für Rettungsfahrzeuge im Einsatz nicht mehr gewährleistet', euro: 100, pts: 1 },
+  { tbnr: '112484', text: 'Gehwegparken (Zeichen 315) zulässig, aber nicht auf dem rechten Gehweg geparkt', euro: 55, pts: 0 },
+  { tbnr: '112494', text: 'Gehwegparken (Zeichen 315) in Einbahnstraße, nicht auf dem dafür vorgesehenen Gehweg geparkt', euro: 55, pts: 0 },
+  { tbnr: '112456', text: 'Halten/Parken nicht platzsparend', euro: 10, pts: 0 },
+  { tbnr: '112446', text: 'Vorrang eines Anderen beim Einfahren in eine Parklücke missachtet', euro: 10, pts: 0 },
+  { tbnr: '112397', text: 'Anhänger über 2 t regelmäßig in besonderem Gebiet geparkt, obwohl verboten', euro: 30, pts: 0 },
+  { tbnr: '112398', text: 'Anhänger ohne Zugfahrzeug länger als zwei Wochen abgestellt', euro: 20, pts: 0 },
+  { tbnr: '112426', text: 'Halten im Fahrraum von Schienenfahrzeugen', euro: 20, pts: 0 },
+  { tbnr: '112427', text: 'Halten im Fahrraum von Schienenfahrzeugen und Behinderung Anderer', euro: 30, pts: 0 },
+  { tbnr: '112428', text: 'Parken im Fahrraum von Schienenfahrzeugen', euro: 55, pts: 0 },
+  { tbnr: '112618', text: 'Parken im Fahrraum von Schienenfahrzeugen und Behinderung Anderer', euro: 70, pts: 0 }
+];
