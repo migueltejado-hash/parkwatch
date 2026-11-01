@@ -1,5 +1,5 @@
 /* ParkWatch Quartier v2.0 – Anwendungslogik (offline-first, keine Build-Abhängigkeit zur Laufzeit) */
-const APP_VERSION = "2.6.3";
+const APP_VERSION = "2.7.0";
 'use strict';
 
 const $ = (id) => document.getElementById(id);
@@ -850,19 +850,70 @@ function buildReportHtml(rs) {
   .kpi{display:grid;grid-template-columns:repeat(3,1fr);gap:8px}.kpi div{border:1px solid #bbb;border-radius:6px;padding:6px}.kpi b{display:block;font-size:20px}
   .case{break-inside:avoid;border:1px solid #bbb;border-radius:6px;padding:8px;margin:10px 0}.grid{display:grid;grid-template-columns:200px 1fr;gap:10px}.grid img{width:100%;margin-bottom:6px;border-radius:4px;cursor:zoom-in}img.big{position:fixed;inset:0;width:100%!important;height:100%;object-fit:contain;background:#000;z-index:9;margin:0!important;border-radius:0;cursor:zoom-out}
   button{padding:8px 14px;font-size:14px;margin:8px 0}@media print{button{display:none}body{padding:0}}@media(max-width:560px){.grid{grid-template-columns:1fr}.kpi{grid-template-columns:1fr 1fr}}</style></head><body>
-  <button onclick="window.print()">Drucken / Als PDF sichern</button> <span class="m">Fotos antippen = vergrößern</span>
   <h1>ParkWatch Quartier – Verkehrs- &amp; Sicherheitsbericht</h1><div class="m">Zeitraum ${esc(d0)} – ${esc(d1)} · ${n} Fall${n === 1 ? '' : 'e'} · erstellt ${esc(new Date().toLocaleDateString('de-DE'))} · Kennzeichen anonymisiert</div>
   <h2>Auswertung</h2><div class="kpi"><div><b>${n}</b>Fälle</div><div><b>${cnt((r) => r.flags?.behinderung || r.flags?.gefaehrdung)}</b>mit Behinderung/Gefährdung</div><div><b>${cnt((r) => r.isSchoolRoute)}</b>Schul-/Kitaweg</div><div><b>${cnt((r) => r.rescueRoute || r.flags?.rettung)}</b>Rettungsweg</div><div><b>${cnt((r) => /LKW|Transporter|Anhänger|Wohnmobil/.test(r.vehicleType || ''))}</b>gewerbl./groß</div><div><b>${sum} €</b>Summe Regelsätze (Orientierung)</div></div>
   <h2>Hotspots (Straßen)</h2><table>${hot}</table><h2>Erfasste Fälle</h2>${cases}
   <script>document.addEventListener('click',function(e){var t=e.target;if(t.tagName==='IMG')t.classList.toggle('big')})</script><p class="m">Hinweis: Die App ist eine private Dokumentationshilfe. Tatbestände und Beträge sind Orientierungswerte; die Bewertung obliegt der zuständigen Behörde.</p></body></html>`;
 }
+function loadJsPdf() { return new Promise((res, rej) => { if (window.jspdf) return res(); const el = document.createElement('script'); el.src = 'vendor/jspdf.min.js'; el.onload = res; el.onerror = () => rej(new Error('PDF-Modul nicht geladen')); document.head.appendChild(el); }); }
+const imgSize = (u) => new Promise((res) => { const im = new Image(); im.onload = () => res([im.naturalWidth, im.naturalHeight]); im.onerror = () => res([4, 3]); im.src = u; });
+async function buildReportPdf(rs) {
+  await loadJsPdf();
+  const { jsPDF } = window.jspdf, doc = new jsPDF({ unit: 'mm', format: 'a4' }), W = 210, H = 297, M = 15, CW = W - 2 * M;
+  const sorted = rs.slice().sort((a, b) => Date.parse(a.timestamp) - Date.parse(b.timestamp)), n = sorted.length;
+  const d0 = fmtDT(Date.parse(sorted[0].timestamp)).split(',')[0], d1 = fmtDT(Date.parse(sorted[n - 1].timestamp)).split(',')[0];
+  const cnt = (f) => sorted.filter(f).length, sum = sorted.reduce((t, r) => t + (+r.fine || 0), 0);
+  const noKz = (t) => (t || '').replace(/\b[A-ZÄÖÜ]{1,3}[ -]?[A-Z]{1,2}[ -]?\d{1,4}[EH]?\b/g, '[Kz]');
+  let y = M;
+  const need = (h) => { if (y + h > H - M - 8) { doc.addPage(); y = M; } };
+  const text = (t, x, size, bold, color) => { doc.setFont('helvetica', bold ? 'bold' : 'normal'); doc.setFontSize(size); doc.setTextColor(color || 20); doc.text(t, x, y); };
+  const para = (t, x, w, size, bold, color) => { doc.setFont('helvetica', bold ? 'bold' : 'normal'); doc.setFontSize(size); doc.setTextColor(color || 20); const ls = doc.splitTextToSize(String(t), w), lh = size * 0.42; ls.forEach((l, k) => doc.text(l, x, y + k * lh)); return ls.length * lh; };
+  const h2 = (t) => { need(14); y += 4; text(t, M, 13, true); y += 2; doc.setDrawColor(150); doc.line(M, y, W - M, y); y += 6; };
+  text('ParkWatch Quartier – Verkehrs- & Sicherheitsbericht', M, 17, true); y += 7;
+  y += para(`Zeitraum ${d0} – ${d1} · ${n} Fall${n === 1 ? '' : 'e'} · erstellt ${new Date().toLocaleDateString('de-DE')} · Kennzeichen anonymisiert`, M, CW, 9, false, 90) + 2;
+  h2('Auswertung');
+  const kp = [[n, 'Fälle'], [cnt((r) => r.flags?.behinderung || r.flags?.gefaehrdung), 'mit Behinderung/Gefährdung'], [cnt((r) => r.isSchoolRoute), 'Schul-/Kitaweg'], [cnt((r) => r.rescueRoute || r.flags?.rettung), 'Rettungsweg'], [cnt((r) => /gewerb|groß|LKW|Transporter|Anhänger/i.test(r.vehicleType || '')), 'gewerbl./groß'], [sum + ' €', 'Summe Regelsätze (Orientierung)']];
+  const bw = (CW - 8) / 3; doc.setDrawColor(170);
+  kp.forEach((k, i) => { const bx = M + (i % 3) * (bw + 4), by = y + Math.floor(i / 3) * 20; doc.roundedRect(bx, by, bw, 17, 1.5, 1.5); doc.setFont('helvetica', 'bold'); doc.setFontSize(15); doc.setTextColor(20); doc.text(String(k[0]), bx + 3, by + 7); doc.setFont('helvetica', 'normal'); doc.setFontSize(8); doc.setTextColor(80); doc.text(doc.splitTextToSize(k[1], bw - 5), bx + 3, by + 11.5); });
+  y += 42;
+  const roads = {}; sorted.forEach((r) => { const k = r.road || r.address || 'unbekannt'; roads[k] = (roads[k] || 0) + 1; });
+  h2('Hotspots (Straßen)');
+  Object.entries(roads).sort((a, b) => b[1] - a[1]).slice(0, 10).forEach(([k, v]) => { need(6); text(k, M, 10); doc.text(`${v}`, W - M - 22, y, { align: 'right' }); doc.text(`${Math.round(v / n * 100)} %`, W - M, y, { align: 'right' }); y += 5.5; });
+  h2('Erfasste Fälle');
+  for (let i = 0; i < n; i++) {
+    const r = sorted[i];
+    const um = [r.flags?.behinderung && 'Behinderung', r.flags?.gefaehrdung && 'Gefährdung', (r.rescueRoute || r.flags?.rettung) && 'Rettungsweg', r.isSchoolRoute && 'Schul-/Kitaweg', r.flags?.dauer && `Dauer > ${r.flags.dauer} Std.`, r.restCm != null && r.restCm !== '' && `Restbreite ${r.restCm} cm`].filter(Boolean).join(' · ');
+    const rows = [['Ort', (r.address || '') + (r.coords ? ` (${(+r.coords.lat).toFixed(5)}, ${(+r.coords.lng).toFixed(5)})` : '')],
+      ['Ortung', ({ gps: 'Live-GPS', exif: 'Foto-GPS', manual: 'Karte (manuell)', wiederhergestellt: 'wiederhergestellt' }[r.locSource] || r.locSource || '–') + (r.accuracy ? ' ±' + Math.round(r.accuracy) + ' m' : '')],
+      ['Fahrzeug', [r.vehicleModel, r.vehicleType, r.vehicleColor].filter(Boolean).join(' · ')],
+      ['Tatbestand', `TBNR ${r.tbnr} · ${r.fine} €${r.points ? ' · ' + r.points + ' Pkt' : ''}${r.tbVerified ? '' : ' (nicht verifiziert)'}\n${r.tbnrDesc || ''}`],
+      ['Umstände', um || '–']]; if (r.notes) rows.push(['Notiz', noKz(r.notes)]);
+    doc.setFontSize(9.5); const hs = rows.map(([, v]) => doc.splitTextToSize(String(v), CW - 28).length * 4 + 1.6);
+    need(10 + hs.reduce((a, b) => a + b, 0) + 40);   // Kopf + Angaben + mind. erste Fotozeile zusammenhalten
+    y += 2; text(`Fall ${i + 1} · ${fmtDT(Date.parse(r.timestamp))}`, M, 11, true); y += 5;
+    rows.forEach(([k, v], q) => { need(hs[q]); text(k, M, 9.5, false, 100); const hh = para(v, M + 28, CW - 28, 9.5, false); y += Math.max(hh, 4) + 1.6; });
+    const pics = (r.photos && r.photos.length ? r.photos : r.blurredPhoto ? [{ img: r.blurredPhoto }] : []), pw = (CW - 8) / 3;
+    for (let k = 0; k < pics.length; k += 3) {
+      const row = pics.slice(k, k + 3), sz = await Promise.all(row.map((p) => imgSize(p.img))), hh = Math.min(70, Math.max(...sz.map(([w, h]) => pw * h / w)));
+      need(hh + 2); row.forEach((p, q) => { const [w, h] = sz[q], ww = Math.min(pw, hh * w / h), th = ww * h / w; doc.addImage(p.img, 'JPEG', M + q * (pw + 4), y, ww, th); }); y += hh + 3;
+    }
+    y += 3; need(4); doc.setDrawColor(210); doc.line(M, y, W - M, y); y += 4;
+  }
+  need(14); y += 2; para('Hinweis: Die App ist eine private Dokumentationshilfe. Tatbestände und Beträge sind Orientierungswerte; die Bewertung obliegt den zuständigen Behörden.', M, CW, 8, false, 100);
+  const pages = doc.getNumberOfPages(); for (let p = 1; p <= pages; p++) { doc.setPage(p); doc.setFontSize(8); doc.setTextColor(120); doc.text(`ParkWatch Quartier · Seite ${p}/${pages}`, W / 2, H - 8, { align: 'center' }); }
+  return doc.output('blob');
+}
 async function printReport() {
   if (!S.records.length) return toast('Keine Fälle vorhanden');
-  const html = buildReportHtml(S.records), blob = new Blob([html], { type: 'text/html;charset=utf-8' });
-  const touch = navigator.maxTouchPoints > 1 && /iPhone|iPad|Macintosh/.test(navigator.userAgent);
-  if (!touch) { const w = window.open(URL.createObjectURL(blob), '_blank'); if (w) { setTimeout(() => { try { w.print(); } catch (e) { /* manuell */ } }, 800); return; } }
-  await shareOrDownload(`ParkWatch_Bericht_${new Date().toISOString().slice(0, 10)}.html`, blob);
-  toast('Bericht-Datei geöffnet/geteilt – dort „Drucken / Als PDF sichern“ wählen', 4500);
+  toast('PDF wird erstellt …', 2500);
+  try {
+    const blob = await buildReportPdf(S.records);
+    if (await shareOrDownload(`ParkWatch_Bericht_${new Date().toISOString().slice(0, 10)}.pdf`, blob)) toast('PDF erstellt – in „Dateien“ sichern oder direkt teilen/drucken', 4500);
+  } catch (e) { console.warn(e); toast('PDF fehlgeschlagen: ' + e.message, 5000); }
+}
+async function exportReportHtml() {
+  if (!S.records.length) return toast('Keine Fälle vorhanden');
+  await shareOrDownload(`ParkWatch_Bericht_${new Date().toISOString().slice(0, 10)}.html`, new Blob([buildReportHtml(S.records)], { type: 'text/html;charset=utf-8' }));
 }
 /* Vollbild-Ansicht (Antippen = Zoom, Wischen = verschieben); mehrere Bilder nacheinander */
 function openLightbox(srcs, caption) {
@@ -1203,6 +1254,7 @@ async function init() {
   $('btnSave').onclick = save; $('btnNew').onclick = () => { if (S.dirty && !S.savedId && (S.cur.photos.length || S.cur.plate) && !confirm('Ungespeicherten Fall verwerfen?')) return; newCase(); };
   $('tabCapture').onclick = () => switchTab('capture'); $('tabStats').onclick = () => switchTab('stats');
   $('btnPrint').onclick = printReport;
+  $('btnRepHtml').onclick = exportReportHtml;
   $('btnPeek').onclick = () => { S.peek = !S.peek; renderPhoto(); }; $('btnFull').onclick = openCurrentFull;
   $('btnCsvAnon').onclick = () => exportCsv(false); $('btnCsvFull').onclick = () => exportCsv(true); $('btnBackup').onclick = exportBackup; $('btnZip').onclick = () => exportPhotosZip(false); $('btnZipOrig').onclick = () => exportPhotosZip(true); $('btnBackupNow').onclick = exportBackup;
   $('inImport').addEventListener('change', (e) => { if (e.target.files[0]) importBackup(e.target.files[0]); e.target.value = ''; });
