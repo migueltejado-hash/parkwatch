@@ -1,5 +1,5 @@
 /* ParkWatch Quartier v2.0 – Anwendungslogik (offline-first, keine Build-Abhängigkeit zur Laufzeit) */
-const APP_VERSION = "2.7.0";
+const APP_VERSION = "2.8.0";
 'use strict';
 
 const $ = (id) => document.getElementById(id);
@@ -751,33 +751,107 @@ function bar(label, count, total, extra = '') {
   const p = pct(count, total);
   return `<div class="bg-slate-950/60 p-2 rounded-xl border border-slate-800"><div class="flex justify-between text-xs"><span class="font-semibold text-slate-200 truncate pr-2">${esc(label)}</span><span class="font-mono text-emerald-400 font-bold shrink-0">${count} <span class="text-slate-500 font-normal">(${p}%)</span></span></div><div class="w-full bg-slate-800 h-1.5 rounded-full overflow-hidden mt-1"><div class="bg-emerald-500 h-full" style="width:${p}%"></div></div>${extra}</div>`;
 }
+/* ---------- Dashboard (Auswertung) ---------- */
+S.dash = { range: 'all', road: '' };
+const DAY = 864e5, WD = ['Mo', 'Di', 'Mi', 'Do', 'Fr', 'Sa', 'So'], TB = [['Nacht', '22–6', (h) => h >= 22 || h < 6], ['Morgens', '6–10', (h) => h >= 6 && h < 10], ['Mittags', '10–14', (h) => h >= 10 && h < 14], ['Nachm.', '14–18', (h) => h >= 14 && h < 18], ['Abends', '18–22', (h) => h >= 18 && h < 22]];
+const roadOf = (r) => r.road || (r.address || '').split(',')[1]?.replace(/\s\d+\w?$/, '').trim() || 'Unbekannt';
+const brandOf = (r) => r.vehicleBrand || ((r.vehicleModel || '').split(' ')[0] || '').replace(/^Unbekannt$/, '') || '';
+const eur = (v) => Math.round(v).toLocaleString('de-DE') + ' €';
+const countBy = (rs, f) => { const o = {}; rs.forEach((r) => { const k = f(r); if (k) o[k] = (o[k] || 0) + 1; }); return Object.entries(o).sort((a, b) => b[1] - a[1]); };
+function dashFilter(rs) {
+  const d = S.dash, lim = d.range === 'all' ? 0 : Date.now() - +d.range * DAY;
+  return rs.filter((r) => Date.parse(r.timestamp) >= lim && (!d.road || roadOf(r) === d.road));
+}
+function dashHeat(rs) {
+  const g = Array.from({ length: 7 }, () => Array(5).fill(0));
+  rs.forEach((r) => { const d = new Date(r.timestamp), wd = (d.getDay() + 6) % 7, h = d.getHours(), t = TB.findIndex((b) => b[2](h)); g[wd][t]++; });
+  return g;
+}
+/* Kernaussagen: Klartext fürs Rathaus-Gespräch (ohne Kennzeichen, daher auch im PDF nutzbar) */
+function dashInsights(rs) {
+  const n = rs.length, out = []; if (!n) return out;
+  const rd = countBy(rs, roadOf); out.push(`${n} ${n === 1 ? 'Fall' : 'Fälle'} dokumentiert${rd.length > 1 ? ' in ' + rd.length + ' Straßen' : ''}; Summe der Regelsätze ${eur(rs.reduce((s, r) => s + (+r.fine || 0), 0))} (Orientierung).`);
+  if (rd.length) out.push(`Schwerpunkt: ${rd[0][0]} mit ${rd[0][1]} von ${n} Fällen (${pct(rd[0][1], n)} %).`);
+  const g = dashHeat(rs); let best = [0, 0, 0]; g.forEach((row, i) => row.forEach((v, j) => { if (v > best[0]) best = [v, i, j]; }));
+  const tb = TB.map((b, j) => [b, g.reduce((s, row) => s + row[j], 0)]).sort((a, b) => b[1] - a[1])[0];
+  if (tb && tb[1]) out.push(`Häufigste Tageszeit: ${tb[0][0].toLowerCase()} (${tb[0][1]} Uhr) – ${pct(tb[1], n)} % der Fälle.${n >= 5 && best[0] > 1 ? ` Spitze: ${WD[best[1]]} ${TB[best[2]][0].toLowerCase()} (${best[0]} Fälle).` : ''}`);
+  const narrow = rs.filter((r) => (r.restCm != null && r.restCm !== '' && r.restCm < NARROW_CM) || r.flags?.behinderung || r.flags?.gefaehrdung).length;
+  if (narrow) out.push(`${pct(narrow, n)} % (${narrow}) behindern Fußgänger oder lassen weniger als ${NARROW_CM} cm Gehwegbreite.`);
+  const sch = rs.filter((r) => r.isSchoolRoute).length, res = rs.filter((r) => r.rescueRoute || r.flags?.rettung || r.group === 'feuerwehr' || r.group === 'enge').length;
+  if (sch || res) out.push([sch && `${sch} auf Schul-/Kitawegen`, res && `${res} mit Einschränkung von Rettungswegen`].filter(Boolean).join(', ') + '.');
+  const tt = countBy(rs, (r) => r.tbnr && `${r.tbnr} · ${r.tbnrDesc || ''}`)[0]; if (tt) out.push(`Häufigster Tatbestand: ${tt[0].replace(/\s·\s$/, '')} (${tt[1]}×).`);
+  return out;
+}
+function dBar(label, v, max, total, col, attrs = '', extra = '') {
+  return `<${attrs ? 'button' : 'div'} class="d-bar" ${attrs}><div class="l"><span>${esc(label)}</span><em>${extra}${v} · ${pct(v, total)} %</em></div><div class="d-trk"><i style="width:${Math.max(3, v / max * 100)}%;${col ? '--c:' + col : ''}"></i></div></${attrs ? 'button' : 'div'}>`;
+}
+function dTrend(rs) {
+  const ts = rs.map((r) => Date.parse(r.timestamp)), t0 = Math.min(...ts), t1 = Math.max(...ts), span = (t1 - t0) / DAY;
+  const unit = span <= 2 ? 'h' : span <= 45 ? 'd' : 'w', step = unit === 'h' ? 36e5 : unit === 'd' ? DAY : 7 * DAY;
+  const start = unit === 'h' ? new Date(t0).setMinutes(0, 0, 0) : unit === 'd' ? new Date(t0).setHours(0, 0, 0, 0) : (() => { const d = new Date(t0); d.setHours(0, 0, 0, 0); d.setDate(d.getDate() - ((d.getDay() + 6) % 7)); return +d; })();
+  const nb = Math.min(60, Math.floor((t1 - start) / step) + 1), b = Array(nb).fill(0); ts.forEach((t) => { b[Math.min(nb - 1, Math.floor((t - start) / step))]++; });
+  const mx = Math.max(...b), W = 320, Hh = 96, pad = 16, bw = (W - 2) / nb, gap = Math.min(3, bw * 0.2);
+  const lab = (i) => { const d = new Date(start + i * step); return unit === 'h' ? d.getHours() + ' Uhr' : d.toLocaleDateString('de-DE', { day: '2-digit', month: '2-digit' }); };
+  const bars = b.map((v, i) => { const h = v ? Math.max(3, v / mx * (Hh - pad - 14)) : 0, x = 1 + i * bw; return `<rect x="${x + gap / 2}" y="${Hh - pad - h}" width="${Math.max(2, bw - gap)}" height="${h}" rx="2" fill="#10b981"/>${v && nb <= 24 ? `<text x="${x + bw / 2}" y="${Hh - pad - h - 3}" font-size="8" fill="#94a3b8" text-anchor="middle">${v}</text>` : ''}`; }).join('');
+  const lbl = nb > 1 ? `<text x="2" y="${Hh - 3}" font-size="9" fill="#64748b">${lab(0)}</text><text x="${W - 2}" y="${Hh - 3}" font-size="9" fill="#64748b" text-anchor="end">${lab(nb - 1)}</text>` : `<text x="${W / 2}" y="${Hh - 3}" font-size="9" fill="#64748b" text-anchor="middle">${lab(0)}</text>`;
+  return { svg: `<svg viewBox="0 0 ${W} ${Hh}" width="100%" role="img" aria-label="Fälle im Zeitverlauf"><line x1="0" x2="${W}" y1="${Hh - pad}" y2="${Hh - pad}" stroke="#334155"/>${bars}${lbl}</svg>`, unit: { h: 'pro Stunde', d: 'pro Tag', w: 'pro Woche' }[unit] };
+}
+function renderDashboard(all) {
+  const el = $('dash'); if (!el) return;
+  const rs = dashFilter(all), n = rs.length, d = S.dash, sum = rs.reduce((s, r) => s + (+r.fine || 0), 0);
+  const chips = [['all', 'Alles'], ['30', '30 Tage'], ['7', '7 Tage']].map(([k, t]) => `<button class="d-chip ${d.range === k ? 'on' : ''}" data-range="${k}">${t}</button>`).join('') + (d.road ? `<button class="d-chip on" data-road="">${esc(d.road)} ✕</button>` : '');
+  let h = `<div class="d-card"><div class="d-chips">${chips}</div></div>`;
+  if (!n) { el.innerHTML = h + '<div class="d-card"><div class="d-empty">Keine Fälle in diesem Filter.</div></div>'; return; }
+  const ts = rs.map((r) => Date.parse(r.timestamp)), d0 = new Date(Math.min(...ts)).toLocaleDateString('de-DE'), d1 = new Date(Math.max(...ts)).toLocaleDateString('de-DE');
+  h += `<div class="d-card d-hero"><div class="d-row"><div><div class="big">${n}</div><div class="sub">${n === 1 ? 'Fall' : 'Fälle'} · ${d0 === d1 ? d0 : d0 + ' – ' + d1}</div></div><div class="r"><b>${eur(sum)}</b><div class="sub">Regelsätze gesamt<br>Ø ${eur(sum / n)} je Fall</div></div></div></div>`;
+  const narrow = rs.filter((r) => (r.restCm != null && r.restCm !== '' && r.restCm < NARROW_CM) || r.flags?.behinderung).length, school = rs.filter((r) => r.isSchoolRoute).length;
+  const rescue = rs.filter((r) => r.rescueRoute || r.flags?.rettung || r.group === 'feuerwehr' || r.group === 'enge').length, heavy = rs.filter((r) => ['LKW', 'Anhänger', 'Wohnmobil', 'Transporter'].includes(r.vehicleType)).length;
+  const rest = rs.filter((r) => r.restCm !== '' && r.restCm != null).map((r) => +r.restCm), avgRest = rest.length ? Math.round(rest.reduce((a, b) => a + b, 0) / rest.length) : null;
+  const pl = {}; rs.forEach((r) => { if (r.licensePlate) pl[r.licensePlate] = (pl[r.licensePlate] || 0) + 1; }); const rep = Object.entries(pl).filter(([, c]) => c >= 2).sort((a, b) => b[1] - a[1]);
+  const kpi = (t, v, s, c) => `<div class="d-kpi" style="--c:${c}"><div class="t">${t}</div><div class="v">${v}</div><div class="s">${s}</div></div>`;
+  h += `<div class="d-kpis">${kpi('Fußgänger-Hindernis', pct(narrow, n) + ' %', `${narrow} Fälle (Behinderung/Engstelle)`, '#fb7185')}${kpi('Schul-/Kitaweg', school, `${pct(school, n)} % der Fälle`, '#fbbf24')}${kpi('Rettungsweg', rescue, `${pct(rescue, n)} % der Fälle`, '#f97316')}${kpi('Gewerbl./groß', heavy, 'LKW, Transporter, Anhänger …', '#22d3ee')}${kpi('Ø Restbreite', avgRest != null ? avgRest + ' cm' : '–', rest.length ? `aus ${rest.length} Messungen` : 'keine Angaben', '#34d399')}${kpi('Mehrfach erfasst', rep.length, 'Fahrzeuge ≥ 2× (nur lokal)', '#a78bfa')}</div>`;
+  h += `<div class="d-card"><div class="d-h"><b><i class="fa-solid fa-lightbulb"></i>Kernaussagen</b><span>für das Gespräch</span></div><ul class="d-ins">${dashInsights(rs).map((t) => `<li>${esc(t)}</li>`).join('')}</ul></div>`;
+  const tr = dTrend(rs); h += `<div class="d-card"><div class="d-h"><b><i class="fa-solid fa-chart-column"></i>Verlauf</b><span>${tr.unit}</span></div>${tr.svg}</div>`;
+  const g = dashHeat(rs), mx = Math.max(1, ...g.flat());
+  h += `<div class="d-card"><div class="d-h"><b><i class="fa-solid fa-table-cells"></i>Wochentag × Tageszeit</b><span>dunkler = mehr</span></div><div class="d-heat"><div class="hd"></div>${TB.map((b) => `<div class="hd">${b[0]}<br>${b[1]}</div>`).join('')}${g.map((row, i) => `<div class="rl">${WD[i]}</div>${row.map((v) => `<div style="background:${v ? `rgba(16,185,129,${(0.18 + 0.82 * v / mx).toFixed(2)})` : '#0b1220'}">${v || ''}</div>`).join('')}`).join('')}</div></div>`;
+  const rd = countBy(rs, roadOf), rm = rd[0][1], fineBy = {}; rs.forEach((r) => { const k = roadOf(r); fineBy[k] = (fineBy[k] || 0) + (+r.fine || 0); });
+  h += `<div class="d-card"><div class="d-h"><b><i class="fa-solid fa-map-location-dot"></i>Hotspots</b><span>antippen = filtern</span></div>${rd.slice(0, 8).map(([k, v]) => dBar(k, v, rm, n, '#10b981', `data-road="${esc(k)}"`, `${eur(fineBy[k])} · `)).join('')}</div>`;
+  h += `<div class="d-card"><div class="d-h"><b><i class="fa-solid fa-location-dot"></i>Karte</b><span>Kreisgröße = Fälle</span></div><div id="dMap" class="d-map"></div></div>`;
+  const tb = {}; rs.forEach((r) => { const k = r.tbnr || '—'; (tb[k] = tb[k] || { t: r.tbnrDesc || '', n: 0, e: 0 }).n++; tb[k].e += +r.fine || 0; });
+  const tbl = Object.entries(tb).sort((a, b) => b[1].n - a[1].n);
+  h += `<div class="d-card"><div class="d-h"><b><i class="fa-solid fa-gavel"></i>Tatbestände</b><span>TBNR · Anzahl · Summe</span></div>${tbl.map(([k, v]) => dBar(`${k} · ${v.t}`, v.n, tbl[0][1].n, n, '#fbbf24', '', `${eur(v.e)} · `).replace(/<button[^>]*>/, '<div class="d-bar">').replace('</button>', '</div>')).join('')}</div>`;
+  const ty = countBy(rs, (r) => r.vehicleType || '?'), br = countBy(rs, brandOf).slice(0, 6), co = countBy(rs, (r) => r.vehicleColor);
+  const cmap = Object.fromEntries(VEHICLE_COLORS), pal = ['#10b981', '#22d3ee', '#a78bfa', '#fbbf24', '#fb7185', '#94a3b8'];
+  h += `<div class="d-card"><div class="d-h"><b><i class="fa-solid fa-car-side"></i>Fahrzeuge</b><span>Klasse · Marke · Farbe</span></div>
+    <div class="d-stack">${ty.map(([k, v], i) => `<i style="width:${v / n * 100}%;background:${pal[i % 6]}" title="${esc(k)}"></i>`).join('')}</div>
+    <div class="d-legend">${ty.map(([k, v], i) => `<span><i style="background:${pal[i % 6]}"></i>${esc(k)} ${v}</span>`).join('')}</div>
+    ${br.length ? `<div style="margin-top:10px">${br.map(([k, v]) => dBar(k, v, br[0][1], n, '#a78bfa')).join('')}</div>` : ''}
+    ${co.length ? `<div class="d-legend" style="margin-top:8px">${co.map(([k, v]) => `<span><i style="background:${cmap[k] || '#64748b'}"></i>${esc(k)} ${v}</span>`).join('')}</div>` : ''}</div>`;
+  h += `<div class="d-card"><div class="d-h"><b><i class="fa-solid fa-repeat"></i>Mehrfach erfasste Fahrzeuge</b><span>nur auf diesem Gerät</span></div>${rep.length ? rep.map(([p, c]) => { const last = rs.filter((r) => r.licensePlate === p).map((r) => Date.parse(r.timestamp)).sort().pop(); return `<div class="d-rep"><b>${esc(p)}</b><span>zuletzt ${new Date(last).toLocaleDateString('de-DE')}</span><b style="color:#fbbf24">${c}×</b></div>`; }).join('') : '<div class="d-empty">Noch keine Wiederholungen (gleiches Kennzeichen ≥ 2×).</div>'}</div>`;
+  el.innerHTML = h; drawDashMap(rs);
+}
+function drawDashMap(rs) {
+  try {
+    if (S.dmap) { S.dmap.remove(); S.dmap = null; }
+    const el = $('dMap'); if (!el || typeof L === 'undefined') return;
+    const pts = {}; rs.filter((r) => r.coords).forEach((r) => { const k = r.coords.lat.toFixed(3) + ',' + r.coords.lng.toFixed(3); const p = (pts[k] = pts[k] || { lat: 0, lng: 0, n: 0, road: roadOf(r) }); p.lat += r.coords.lat; p.lng += r.coords.lng; p.n++; });
+    const list = Object.values(pts); if (!list.length) { el.innerHTML = '<div class="d-empty" style="padding:12px">Keine Koordinaten.</div>'; return; }
+    const m = (S.dmap = L.map(el, { zoomControl: false, attributionControl: true })); L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', { maxZoom: 19, attribution: '© OpenStreetMap' }).addTo(m);
+    const mx = Math.max(...list.map((p) => p.n)), ll = [];
+    list.forEach((p) => { const c = [p.lat / p.n, p.lng / p.n]; ll.push(c); L.circleMarker(c, { radius: 8 + 14 * Math.sqrt(p.n / mx), color: '#34d399', weight: 2, fillColor: '#10b981', fillOpacity: 0.45 }).addTo(m).bindTooltip(`${p.road}: ${p.n}`, { permanent: list.length <= 6, direction: 'top' }); });
+    m.fitBounds(ll, { padding: [24, 24], maxZoom: 17 }); setTimeout(() => m.invalidateSize(), 150);
+  } catch (e) { console.warn('Dashboard-Karte', e); }
+}
 async function refreshStats() {
   const rs = (S.records = (await dbAll()).sort((a, b) => a.timestamp.localeCompare(b.timestamp))); const n = rs.length;
   if (n && !cloudReady() && !S.settings.lastBackup && !S.settings.unbacked) { S.settings.unbacked = n; saveSettings(); }
   syncBackupBar(n);
   $('countBadge').textContent = n;
   const empty = '<div class="text-slate-500 italic text-xs py-1">Keine Daten.</div>';
-  if (!n) { $('kpis').innerHTML = ''; ['repHotspots', 'repTbnr', 'repTime', 'repTypes'].forEach((i) => ($(i).innerHTML = empty)); $('repRecords').innerHTML = '<div class="text-center py-8 text-slate-500 text-xs">Noch keine Fälle.</div>'; $('repFines').textContent = '0 €'; $('repPeriod').textContent = 'Noch keine Daten'; return; }
-  const narrow = rs.filter((r) => (r.restCm != null && r.restCm < NARROW_CM) || r.flags?.behinderung).length;
-  const school = rs.filter((r) => r.isSchoolRoute).length, rescue = rs.filter((r) => r.rescueRoute || r.flags?.rettung || r.group === 'feuerwehr' || r.group === 'enge').length;
-  const heavy = rs.filter((r) => r.vehicleType === 'LKW' || r.vehicleType === 'Anhänger' || r.vehicleType === 'Wohnmobil' || r.vehicleType === 'Transporter').length;
-  const plates = {}; rs.forEach((r) => { if (r.licensePlate) plates[r.licensePlate] = (plates[r.licensePlate] || 0) + 1; });
-  const repeat = Object.values(plates).filter((x) => x >= 2).length;
-  const kpi = (t, v, sub, col) => `<div class="bg-slate-950/80 border border-slate-800 rounded-xl p-2.5"><div class="text-[10px] ${col} uppercase font-medium">${t}</div><div class="text-xl font-black font-mono ${col}">${v}</div><div class="text-[9px] text-slate-500">${sub}</div></div>`;
-  $('kpis').innerHTML = kpi('Fälle', n, 'dokumentiert', 'text-white') + kpi('Fußgänger-Hindernis', pct(narrow, n) + '%', `${narrow} ${narrow === 1 ? 'Fall' : 'Fälle'} (Behinderung / Engstelle)`, 'text-rose-400') + kpi('Schul-/Kitaweg', pct(school, n) + '%', `${school} ${school === 1 ? 'Fall' : 'Fälle'}`, 'text-amber-400') + kpi('Rettungsweg', pct(rescue, n) + '%', `${rescue} ${rescue === 1 ? 'Fall' : 'Fälle'}`, 'text-orange-400') + kpi('Gewerbl./Groß', pct(heavy, n) + '%', `${heavy} Fahrzeuge`, 'text-cyan-400') + kpi('Wiederholt', repeat, 'Fahrzeuge ≥ 2×', 'text-violet-300');
-  $('repFines').textContent = rs.reduce((s, r) => s + (r.fine || 0), 0).toLocaleString('de-DE') + ' €';
+  if (!n) { $('dash').innerHTML = ''; $('repRecords').innerHTML = '<div class="text-center py-8 text-slate-500 text-xs">Noch keine Fälle.</div>'; $('repFines').textContent = '0 €'; $('repPeriod').textContent = 'Noch keine Daten'; return; }
   const d0 = new Date(rs[0].timestamp), d1 = new Date(rs[n - 1].timestamp);
   $('repPeriod').textContent = `${d0.toLocaleDateString('de-DE')} – ${d1.toLocaleDateString('de-DE')} · ${n} ${n === 1 ? 'Fall' : 'Fälle'}`;
-
-  const roads = {}; rs.forEach((r) => { const k = r.road || (r.address || '').split(',')[1]?.replace(/\s\d+\w?$/, '').trim() || 'Unbekannt'; roads[k] = (roads[k] || 0) + 1; });
-  $('repHotspots').innerHTML = Object.entries(roads).sort((a, b) => b[1] - a[1]).slice(0, 6).map(([k, v]) => bar(k, v, n)).join('');
-  const tb = {}; rs.forEach((r) => { const k = `${r.tbnr} · ${r.tbnrDesc || ''}`; tb[k] = (tb[k] || 0) + 1; });
-  $('repTbnr').innerHTML = Object.entries(tb).sort((a, b) => b[1] - a[1]).map(([k, v]) => `<div class="flex justify-between gap-2 py-1.5 border-b border-slate-800/80 last:border-none text-[11px]"><span class="text-slate-300">${esc(k)}</span><span class="font-mono font-bold text-amber-400 shrink-0">${v}×</span></div>`).join('');
-  const buckets = { 'Nacht (22–6 Uhr)': 0, 'Morgens (6–10)': 0, 'Tagsüber (10–17)': 0, 'Abends (17–22)': 0 };
-  rs.forEach((r) => { const h = new Date(r.timestamp).getHours(); buckets[h >= 22 || h < 6 ? 'Nacht (22–6 Uhr)' : h < 10 ? 'Morgens (6–10)' : h < 17 ? 'Tagsüber (10–17)' : 'Abends (17–22)']++; });
-  $('repTime').innerHTML = Object.entries(buckets).map(([k, v]) => bar(k, v, n)).join('');
-  const ty = {}; rs.forEach((r) => { ty[r.vehicleType || '?'] = (ty[r.vehicleType || '?'] || 0) + 1; });
-  $('repTypes').innerHTML = Object.entries(ty).sort((a, b) => b[1] - a[1]).map(([k, v]) => bar(k, v, n)).join('');
+  renderDashboard(rs);
   $('repRecords').innerHTML = rs.slice().reverse().map((r) => `
     <button data-open="${r.id}" class="w-full text-left bg-slate-900 border border-slate-800 rounded-xl p-2.5 flex items-center gap-3 active:scale-[0.99]">
       <div class="w-14 h-14 rounded-lg bg-slate-950 overflow-hidden flex-shrink-0 border border-slate-800">${r.blurredPhoto ? `<img src="${r.blurredPhoto}" class="w-full h-full object-cover" alt="">` : '<div class="w-full h-full flex items-center justify-center text-slate-600"><i class="fa-solid fa-image"></i></div>'}</div>
@@ -850,7 +924,7 @@ function buildReportHtml(rs) {
   .kpi{display:grid;grid-template-columns:repeat(3,1fr);gap:8px}.kpi div{border:1px solid #bbb;border-radius:6px;padding:6px}.kpi b{display:block;font-size:20px}
   .case{break-inside:avoid;border:1px solid #bbb;border-radius:6px;padding:8px;margin:10px 0}.grid{display:grid;grid-template-columns:200px 1fr;gap:10px}.grid img{width:100%;margin-bottom:6px;border-radius:4px;cursor:zoom-in}img.big{position:fixed;inset:0;width:100%!important;height:100%;object-fit:contain;background:#000;z-index:9;margin:0!important;border-radius:0;cursor:zoom-out}
   button{padding:8px 14px;font-size:14px;margin:8px 0}@media print{button{display:none}body{padding:0}}@media(max-width:560px){.grid{grid-template-columns:1fr}.kpi{grid-template-columns:1fr 1fr}}</style></head><body>
-  <h1>ParkWatch Quartier – Verkehrs- &amp; Sicherheitsbericht</h1><div class="m">Zeitraum ${esc(d0)} – ${esc(d1)} · ${n} Fall${n === 1 ? '' : 'e'} · erstellt ${esc(new Date().toLocaleDateString('de-DE'))} · Kennzeichen anonymisiert</div>
+  <h1>ParkWatch Quartier – Verkehrs- &amp; Sicherheitsbericht</h1><div class="m">Zeitraum ${esc(d0)} – ${esc(d1)} · ${n} ${n === 1 ? 'Fall' : 'Fälle'} · erstellt ${esc(new Date().toLocaleDateString('de-DE'))} · Kennzeichen anonymisiert</div>
   <h2>Auswertung</h2><div class="kpi"><div><b>${n}</b>Fälle</div><div><b>${cnt((r) => r.flags?.behinderung || r.flags?.gefaehrdung)}</b>mit Behinderung/Gefährdung</div><div><b>${cnt((r) => r.isSchoolRoute)}</b>Schul-/Kitaweg</div><div><b>${cnt((r) => r.rescueRoute || r.flags?.rettung)}</b>Rettungsweg</div><div><b>${cnt((r) => /LKW|Transporter|Anhänger|Wohnmobil/.test(r.vehicleType || ''))}</b>gewerbl./groß</div><div><b>${sum} €</b>Summe Regelsätze (Orientierung)</div></div>
   <h2>Hotspots (Straßen)</h2><table>${hot}</table><h2>Erfasste Fälle</h2>${cases}
   <script>document.addEventListener('click',function(e){var t=e.target;if(t.tagName==='IMG')t.classList.toggle('big')})</script><p class="m">Hinweis: Die App ist eine private Dokumentationshilfe. Tatbestände und Beträge sind Orientierungswerte; die Bewertung obliegt der zuständigen Behörde.</p></body></html>`;
@@ -870,13 +944,14 @@ async function buildReportPdf(rs) {
   const para = (t, x, w, size, bold, color) => { doc.setFont('helvetica', bold ? 'bold' : 'normal'); doc.setFontSize(size); doc.setTextColor(color || 20); const ls = doc.splitTextToSize(String(t), w), lh = size * 0.42; ls.forEach((l, k) => doc.text(l, x, y + k * lh)); return ls.length * lh; };
   const h2 = (t) => { need(14); y += 4; text(t, M, 13, true); y += 2; doc.setDrawColor(150); doc.line(M, y, W - M, y); y += 6; };
   text('ParkWatch Quartier – Verkehrs- & Sicherheitsbericht', M, 17, true); y += 7;
-  y += para(`Zeitraum ${d0} – ${d1} · ${n} Fall${n === 1 ? '' : 'e'} · erstellt ${new Date().toLocaleDateString('de-DE')} · Kennzeichen anonymisiert`, M, CW, 9, false, 90) + 2;
+  y += para(`Zeitraum ${d0} – ${d1} · ${n} ${n === 1 ? 'Fall' : 'Fälle'} · erstellt ${new Date().toLocaleDateString('de-DE')} · Kennzeichen anonymisiert`, M, CW, 9, false, 90) + 2;
   h2('Auswertung');
   const kp = [[n, 'Fälle'], [cnt((r) => r.flags?.behinderung || r.flags?.gefaehrdung), 'mit Behinderung/Gefährdung'], [cnt((r) => r.isSchoolRoute), 'Schul-/Kitaweg'], [cnt((r) => r.rescueRoute || r.flags?.rettung), 'Rettungsweg'], [cnt((r) => /gewerb|groß|LKW|Transporter|Anhänger/i.test(r.vehicleType || '')), 'gewerbl./groß'], [sum + ' €', 'Summe Regelsätze (Orientierung)']];
   const bw = (CW - 8) / 3; doc.setDrawColor(170);
   kp.forEach((k, i) => { const bx = M + (i % 3) * (bw + 4), by = y + Math.floor(i / 3) * 20; doc.roundedRect(bx, by, bw, 17, 1.5, 1.5); doc.setFont('helvetica', 'bold'); doc.setFontSize(15); doc.setTextColor(20); doc.text(String(k[0]), bx + 3, by + 7); doc.setFont('helvetica', 'normal'); doc.setFontSize(8); doc.setTextColor(80); doc.text(doc.splitTextToSize(k[1], bw - 5), bx + 3, by + 11.5); });
   y += 42;
   const roads = {}; sorted.forEach((r) => { const k = r.road || r.address || 'unbekannt'; roads[k] = (roads[k] || 0) + 1; });
+  h2('Kernaussagen'); dashInsights(sorted).forEach((t) => { need(10); doc.setFillColor(16, 185, 129); doc.circle(M + 1.5, y - 1.2, 0.9, 'F'); y += para(t, M + 5, CW - 5, 9.5, false) + 2.2; });
   h2('Hotspots (Straßen)');
   Object.entries(roads).sort((a, b) => b[1] - a[1]).slice(0, 10).forEach(([k, v]) => { need(6); text(k, M, 10); doc.text(`${v}`, W - M - 22, y, { align: 'right' }); doc.text(`${Math.round(v / n * 100)} %`, W - M, y, { align: 'right' }); y += 5.5; });
   h2('Erfasste Fälle');
@@ -1254,6 +1329,11 @@ async function init() {
   $('btnSave').onclick = save; $('btnNew').onclick = () => { if (S.dirty && !S.savedId && (S.cur.photos.length || S.cur.plate) && !confirm('Ungespeicherten Fall verwerfen?')) return; newCase(); };
   $('tabCapture').onclick = () => switchTab('capture'); $('tabStats').onclick = () => switchTab('stats');
   $('btnPrint').onclick = printReport;
+  $('dash').addEventListener('click', (e) => {
+    const r = e.target.closest('[data-range]'), q = e.target.closest('[data-road]');
+    if (r) S.dash.range = r.dataset.range; else if (q) S.dash.road = S.dash.road === q.dataset.road ? '' : q.dataset.road; else return;
+    renderDashboard(S.records);
+  });
   $('btnRepHtml').onclick = exportReportHtml;
   $('btnPeek').onclick = () => { S.peek = !S.peek; renderPhoto(); }; $('btnFull').onclick = openCurrentFull;
   $('btnCsvAnon').onclick = () => exportCsv(false); $('btnCsvFull').onclick = () => exportCsv(true); $('btnBackup').onclick = exportBackup; $('btnZip').onclick = () => exportPhotosZip(false); $('btnZipOrig').onclick = () => exportPhotosZip(true); $('btnBackupNow').onclick = exportBackup;

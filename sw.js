@@ -1,5 +1,5 @@
 /* ParkWatch Service Worker – App-Shell offline; OCR-Dateien werden im Hintergrund nachgeladen. */
-const VERSION = 'pw-v2.7.0';
+const VERSION = 'pw-v2.8.0';
 const SHELL = ['./', 'index.html', 'styles.css', 'app.js', 'data.js', 'manifest.webmanifest',
   'vendor/leaflet/leaflet.js', 'vendor/leaflet/leaflet.css', 'vendor/leaflet/images/marker-icon.png', 'vendor/leaflet/images/marker-shadow.png',
   'vendor/exifr.js', 'vendor/jspdf.min.js', 'vendor/fa/all.min.css', 'vendor/fa/webfonts/fa-solid-900.woff2', 'vendor/fa/webfonts/fa-brands-400.woff2',
