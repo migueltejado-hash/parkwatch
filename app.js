@@ -1,5 +1,5 @@
 /* ParkWatch Quartier v2.0 – Anwendungslogik (offline-first, keine Build-Abhängigkeit zur Laufzeit) */
-const APP_VERSION = "2.1.3";
+const APP_VERSION = "2.2.0";
 'use strict';
 
 const $ = (id) => document.getElementById(id);
@@ -25,7 +25,7 @@ function emptyCase() {
   };
 }
 const S = { dbg: null, ocrErr: null, db: null, cur: emptyCase(), editId: null, savedId: null, dirty: true, records: [], map: null, marker: null, mapBig: false,
-            settings: { aiOn: false, aiKey: '', aiModel: 'claude-sonnet-5-5', aiAuto: false }, ocr: null, ocrBusy: 0 };
+            settings: { aiOn: false, aiKey: '', aiModel: 'claude-sonnet-5-5', aiAuto: false, keepOrig: true }, ocr: null, ocrBusy: 0 };
 
 /* ---------- Hilfen ---------- */
 let toastTimer;
@@ -40,10 +40,11 @@ const group = (id) => TATBESTAENDE.find((g) => g.id === id);
 /* ---------- IndexedDB ---------- */
 function openDB() {
   return new Promise((resolve, reject) => {
-    const req = indexedDB.open('ParkWatch_StVO_DB', 4);
+    const req = indexedDB.open('ParkWatch_StVO_DB', 5);
     req.onupgradeneeded = (e) => {
       const db = e.target.result;
       if (!db.objectStoreNames.contains('incidents')) db.createObjectStore('incidents', { keyPath: 'id', autoIncrement: true });
+      if (!db.objectStoreNames.contains('originals')) db.createObjectStore('originals', { keyPath: 'key' });
       if (!db.objectStoreNames.contains('draft')) db.createObjectStore('draft', { keyPath: 'key' });
     };
     req.onsuccess = () => resolve(req.result);
@@ -58,7 +59,12 @@ const dbAll = () => idb('incidents', 'readonly', (s) => s.getAll()).then((r) => 
 const dbPut = (rec) => idb('incidents', 'readwrite', (s) => s.put(rec));
 const dbAdd = (rec) => idb('incidents', 'readwrite', (s) => s.add(rec));
 const dbDel = (id) => idb('incidents', 'readwrite', (s) => s.delete(id));
-const dbClear = () => idb('incidents', 'readwrite', (s) => s.clear());
+const dbClear = () => idb('incidents', 'readwrite', (s) => s.clear()).then(() => idb('originals', 'readwrite', (s) => s.clear()));
+/* Originale (unzensiert) – nur lokal auf diesem Gerät, getrennt von den Fällen; Exporte/Berichte enthalten sie nie */
+const origRange = (id) => IDBKeyRange.bound(id + ':', id + ':\uffff');
+const origGet = (id) => idb('originals', 'readonly', (s) => s.getAll(origRange(id))).then((r) => (r || []).sort((a, b) => a.i - b.i));
+const origDel = (id) => idb('originals', 'readwrite', (s) => s.delete(origRange(id)));
+const origPut = (o) => idb('originals', 'readwrite', (s) => s.put(o));
 const draftPut = (d) => idb('draft', 'readwrite', (s) => s.put({ key: 'current', ...d }));
 const draftGet = () => idb('draft', 'readonly', (s) => s.get('current'));
 const draftDel = () => idb('draft', 'readwrite', (s) => s.delete('current'));
@@ -172,6 +178,7 @@ async function addPhoto(file) {
   try { img = await loadImage(file); } catch (e) { setOcrStatus('hide'); toast('Foto konnte nicht gelesen werden'); return; }
   const canvas = scaledCanvas(img, MAX_ORIG_PX);
   const ts = (meta && (meta.DateTimeOriginal || meta.CreateDate)) ? new Date(meta.DateTimeOriginal || meta.CreateDate).getTime() : Date.now();
+  S.peek = false;
   const first = S.cur.photos.length === 0;
   const photo = { orig: canvas, origUrl: canvas.toDataURL('image/jpeg', 0.9), boxes: [], ts, out: null, doc: !first };   // doc = Zusatzfoto nur zur Dokumentation (keine Kennzeichen-Suche)
   S.cur.photos.push(photo); S.cur.active = S.cur.photos.length - 1;
@@ -195,12 +202,12 @@ async function addPhoto(file) {
 function locateHint() { $('mapWrap').scrollIntoView({ behavior: 'smooth', block: 'center' }); }
 
 /* Zeichnen: Original + schwarze Balken. `out` ist die einzige Fassung, die gespeichert/exportiert wird. */
-function drawPhoto(canvas, p, withMarks = true) {
+function drawPhoto(canvas, p, withMarks = true, withBars = true) {
   const o = p.orig; canvas.width = o.width; canvas.height = o.height;
   const ctx = canvas.getContext('2d'); ctx.drawImage(o, 0, 0);
   ctx.fillStyle = '#000';
-  for (const b of p.boxes) { ctx.fillRect(b.x, b.y, b.w, b.h); }
-  if (withMarks) {
+  if (withBars) for (const b of p.boxes) { ctx.fillRect(b.x, b.y, b.w, b.h); }
+  if (withMarks && withBars) {
     ctx.strokeStyle = '#10b981'; ctx.lineWidth = Math.max(2, o.width * 0.003);
     for (const b of p.boxes) ctx.strokeRect(b.x, b.y, b.w, b.h);
   }
@@ -210,7 +217,8 @@ function renderPhoto() {
   const has = !!p;
   cv.classList.toggle('hidden', !has); $('photoPlaceholder').classList.toggle('hidden', has);
   $('photoTools').classList.toggle('hidden', !has); $('tapHint').classList.toggle('hidden', !has);
-  if (has) drawPhoto(cv, p);
+  if (has) drawPhoto(cv, p, !S.peek, !S.peek);
+  $('btnPeek').classList.toggle('text-amber-300', !!S.peek); $('tapHint').innerHTML = S.peek ? '<i class="fa-solid fa-eye text-amber-300 mr-1"></i>Ansicht ohne Balken – zum Bearbeiten wieder einblenden' : (p && p.boxes.length ? '<i class="fa-solid fa-hand-pointer text-emerald-400 mr-1"></i>Balken antippen = entfernen · sonst Kennzeichen antippen' : '<i class="fa-solid fa-hand-pointer text-emerald-400 mr-1"></i>Aufs Kennzeichen tippen = Balken setzen + lesen');
 }
 function renderThumbs() {
   const box = $('thumbs'); const ph = S.cur.photos;
@@ -300,9 +308,18 @@ function parsePlate(tin, strict = false) {
   }
   return null;
 }
+/* Häufiger OCR-Fehler: das „D“ des EU-Streifens klebt am Ortskürzel („DHD AM 2330“) oder steht als Einzelbuchstabe davor. */
+const KZ2 = new Set('AA AB AC AE AH AK AM AN AP AS AW AZ BA BB BC BD BE BI BL BM BN BO BS BT BZ CB CE CO CW DA DD DE DH DL DM DN DO DU DW DZ EA EB ED EE EF EH EI EL EM EN ER ES EU FB FD FF FG FL FN FO FR FS FT FU FW GA GC GD GE GF GG GI GL GM GN GP GR GS GT GZ HA HB HC HD HE HF HG HH HI HK HL HM HN HO HP HR HS HU HV HX HY HZ IK IN IZ JE JL KA KB KC KE KF KG KH KI KL KM KN KO KR KS KT KU KW KY LA LB LC LD LDS LG LH LI LL LM LN LO LP LR LU MA MB MC MD ME MG MH MI MK ML MM MN MO MQ MR MS MT MW MY MZ NB ND NE NF NH NI NK NM NN NO NP NR NT NU NW NY NZ OA OB OC OD OE OF OG OH OK OL OM ON OP OS OT OZ PA PB PE PF PI PL PM PN PR PS RA RB RC RD RE RG RH RL RM RN RO RP RS RT RV RW RZ SB SC SE SG SH SI SK SL SM SN SO SP SR ST SU SW SY SZ TF TG TO TP TS TT TÜ UE UH UL UM UN VB VG VK VR VS WA WB WD WE WF WG WI WK WL WM WN WO WR WS WT WN WU WW WZ ZE ZI ZW'.split(' '));
+const KZ_D3 = new Set(['DAH', 'DAN', 'DAU', 'DBR', 'DEG', 'DEL', 'DGF', 'DIL', 'DIN', 'DIZ', 'DLG', 'DON', 'DUD', 'DÜW']);
+function cleanPlate(t) {
+  let m = String(t).match(/^([A-ZÄÖÜ]{1,3}) ([A-Z]{1,2}) (\d{1,4}[EH]?)$/);
+  if (m) { const c = m[1]; if (c.length === 3 && c[0] === 'D' && !KZ_D3.has(c) && KZ2.has(c.slice(1))) return c.slice(1) + ' ' + m[2] + ' ' + m[3]; return t; }
+  m = String(t).match(/^([A-ZÄÖÜ]) ([A-ZÄÖÜ]{1,3}) ([A-Z]{1,2}) (\d{1,4}[EH]?)$/);       // vierteilig = nie gültig -> führenden Einzelbuchstaben entfernen
+  return m ? m[2] + ' ' + m[3] + ' ' + m[4] : t;
+}
 function plateFromText(text, conf = 60, strict = false) {
   const toks = String(text).split(/\s+/).map(normTok).filter(Boolean);
-  return plateCandidates(toks.map((t, i) => ({ text: t, conf, bbox: { x0: i * 100, y0: 0, x1: i * 100 + 80, y1: 40 } })), strict);
+  return plateCandidates(toks.map((t, i) => ({ text: t, conf, bbox: { x0: i * 100, y0: 0, x1: i * 100 + 80, y1: 40 } })), strict).map((c) => ({ ...c, text: cleanPlate(c.text) }));
 }
 
 /* --- Kennzeichen lokalisieren (klassische Bildverarbeitung) + Region-OCR ---
@@ -480,6 +497,7 @@ function padBox(b, o, px, py) {
 /* Tippen: Balken setzen + Region per OCR lesen */
 async function tapCensor(ev) {
   const p = S.cur.photos[S.cur.active]; if (!p) return;
+  if (S.peek) { toast('Ansicht ohne Balken – oben das Auge antippen, um zu bearbeiten'); return; }
   const cv = $('photoCanvas'), r = cv.getBoundingClientRect();
   const x = (ev.clientX - r.left) * (cv.width / r.width), y = (ev.clientY - r.top) * (cv.height / r.height);
   // vorhandenen Balken antippen = entfernen
@@ -647,7 +665,12 @@ async function save() {
     if (S.editId) { rec.id = S.editId; await dbPut(rec); S.savedId = S.editId; }
     else if (S.savedId) { rec.id = S.savedId; await dbPut(rec); }
     else S.savedId = await dbAdd(rec);
-    await draftDel(); $('draftBadge').classList.add('hidden');
+    if (S.settings.keepOrig !== false) {
+      const rid = S.editId || S.savedId; const ps = c.photos; let any = false;
+      if (ps.some((p) => !p.locked)) { await origDel(rid); for (let i = 0; i < ps.length; i++) { const p = ps[i]; if (p.locked) continue; await origPut({ key: rid + ':' + i, i, img: p.origUrl, boxes: p.boxes, ts: p.ts, doc: !!p.doc }); any = true; } }
+      if (any && !rec.hasOrig) { rec.id = rid; rec.hasOrig = true; await dbPut(rec); }
+    }
+    await draftDel(); $('draftBadge').classList.add('hidden'); S.peek = false;
     S.dirty = false; setSaveButton(); toast('Gespeichert'); refreshStats();
   } catch (err) { console.error(err); toast('Speichern fehlgeschlagen: ' + (err && err.name === 'QuotaExceededError' ? 'Speicher voll' : 'Datenbankfehler'), 4500); }
 }
@@ -713,14 +736,18 @@ async function refreshStats() {
 }
 function openDetail(id) {
   const r = S.records.find((x) => x.id === id); if (!r) return;
-  $('mImgs').innerHTML = (r.photos?.length ? r.photos : r.blurredPhoto ? [{ img: r.blurredPhoto }] : []).map((p) => `<img src="${p.img}" class="h-40 rounded-xl border border-slate-800 flex-shrink-0" alt="">`).join('');
+  const pics = (r.photos?.length ? r.photos : r.blurredPhoto ? [{ img: r.blurredPhoto }] : []);
+  $('mImgs').innerHTML = pics.map((p, i) => `<img data-zoom="${i}" src="${p.img}" class="h-40 rounded-xl border border-slate-800 flex-shrink-0 cursor-zoom-in" alt="Foto vergrößern">`).join('');
+  $('mImgs').onclick = (e) => { const t = e.target.closest('[data-zoom]'); if (t) openLightbox(pics[+t.dataset.zoom].img, 'Foto (Kennzeichen geschwärzt)'); };
+  $('mOrig').classList.toggle('hidden', !r.hasOrig);
+  $('mOrig').onclick = async () => { const os = await origGet(r.id).catch(() => []); if (!os.length) return toast('Kein Original gespeichert'); openLightbox(os.map((o) => o.img), 'ORIGINAL – nur auf diesem Gerät, nicht für Weitergabe'); };
   const row = (k, v) => `<div class="flex justify-between gap-3"><span class="text-slate-400 shrink-0">${k}</span><span class="text-slate-200 text-right">${v}</span></div>`;
   $('mBody').innerHTML = row('Kennzeichen', `<span class="font-mono font-bold text-emerald-300">${esc(r.licensePlate || '—')}</span>`) + row('Fahrzeug', `${esc(r.vehicleModel)} (${esc(r.vehicleType)}${r.vehicleColor ? ', ' + esc(r.vehicleColor) : ''})${r.aiFilled ? ' · KI' : ''}`) +
     row('Tatbestand', `<span class="font-mono text-amber-300">TBNR ${esc(r.tbnr)} · ${r.fine} €${r.points ? ' · ' + r.points + ' Pkt' : ''}</span>`) + `<p class="text-[11px] text-slate-400">${esc(r.tbnrDesc)}</p>` +
     row('Ort', esc(r.address)) + row('Zeit', fmtDT(Date.parse(r.timestamp)) + (r.durationMin ? ` (+${r.durationMin} min)` : '')) + row('Standort-Quelle', esc(r.locSource || '—')) +
     (r.restCm != null ? row('Restbreite', r.restCm + ' cm') : '') + (r.notes ? `<p class="pt-1 border-t border-slate-800 text-[11px] text-slate-300">${esc(r.notes)}</p>` : '');
   $('mMaps').href = `https://www.google.com/maps?q=${r.coords.lat},${r.coords.lng}`;
-  $('mDel').onclick = async () => { if (!confirm('Fall endgültig löschen?')) return; await dbDel(id); $('modal').classList.add('hidden'); toast('Gelöscht'); refreshStats(); };
+  $('mDel').onclick = async () => { if (!confirm('Fall endgültig löschen?')) return; await dbDel(id); await origDel(id).catch(() => {}); $('modal').classList.add('hidden'); toast('Gelöscht'); refreshStats(); };
   $('mEdit').onclick = () => editRecord(r);
   $('modal').classList.remove('hidden');
 }
@@ -732,8 +759,10 @@ async function editRecord(r) {
   c.group = r.group || 'gehweg'; c.beh = !!r.flags?.behinderung && !r.flags?.gefaehrdung; c.gef = !!r.flags?.gefaehrdung; c.extra = !!r.flags?.rettung; c.dur = r.flags?.dauer || 0; c.durManual = true;
   c.school = !!r.isSchoolRoute; c.rescue = !!r.rescueRoute; c.restCm = r.restCm ?? ''; c.notes = r.notes || '';
   if (c.group === 'sonst') c.custom = { tbnr: r.tbnr, text: r.tbnrDesc, euro: String(r.fine), pts: String(r.points || '') };
-  for (const p of (r.photos || [])) { const cv = await canvasFromUrl(p.img); c.photos.push({ orig: cv, origUrl: p.img, boxes: [], ts: p.ts, out: p.img, locked: true }); }
-  S.cur = c; S.editId = r.id; S.savedId = r.id; S.dirty = false;
+  const os = r.hasOrig ? await origGet(r.id).catch(() => []) : [];
+  if (os.length) for (const o of os) { const cv = await canvasFromUrl(o.img); c.photos.push({ orig: cv, origUrl: o.img, boxes: o.boxes || [], ts: o.ts, out: null, locked: false, doc: !!o.doc }); }
+  else for (const p of (r.photos || [])) { const cv = await canvasFromUrl(p.img); c.photos.push({ orig: cv, origUrl: p.img, boxes: [], ts: p.ts, out: p.img, locked: true }); }
+  S.peek = false; S.cur = c; S.editId = r.id; S.savedId = r.id; S.dirty = false;
   if (c.coords) { placeMarker(c.coords.lat, c.coords.lng); S.map.setView([c.coords.lat, c.coords.lng], 17); }
   switchTab('capture'); renderAll(); setSaveButton(); toast('Fall geladen – ändern und speichern');
 }
@@ -765,13 +794,13 @@ function buildReportHtml(rs) {
   body{font:14px/1.4 -apple-system,Segoe UI,Arial,sans-serif;color:#111;max-width:820px;margin:0 auto;padding:16px}h1{margin:0 0 4px;font-size:22px}h2{font-size:16px;margin:18px 0 6px;border-bottom:1px solid #999}h3{font-size:14px;margin:0 0 6px}
   .m{color:#555;font-size:12px}table{border-collapse:collapse;width:100%}td{padding:3px 6px;vertical-align:top;border-bottom:1px solid #ddd}.r{text-align:right}.kv td:first-child{width:90px;color:#555}
   .kpi{display:grid;grid-template-columns:repeat(3,1fr);gap:8px}.kpi div{border:1px solid #bbb;border-radius:6px;padding:6px}.kpi b{display:block;font-size:20px}
-  .case{break-inside:avoid;border:1px solid #bbb;border-radius:6px;padding:8px;margin:10px 0}.grid{display:grid;grid-template-columns:200px 1fr;gap:10px}.grid img{width:100%;margin-bottom:6px;border-radius:4px}
+  .case{break-inside:avoid;border:1px solid #bbb;border-radius:6px;padding:8px;margin:10px 0}.grid{display:grid;grid-template-columns:200px 1fr;gap:10px}.grid img{width:100%;margin-bottom:6px;border-radius:4px;cursor:zoom-in}img.big{position:fixed;inset:0;width:100%!important;height:100%;object-fit:contain;background:#000;z-index:9;margin:0!important;border-radius:0;cursor:zoom-out}
   button{padding:8px 14px;font-size:14px;margin:8px 0}@media print{button{display:none}body{padding:0}}@media(max-width:560px){.grid{grid-template-columns:1fr}.kpi{grid-template-columns:1fr 1fr}}</style></head><body>
-  <button onclick="window.print()">Drucken / Als PDF sichern</button>
+  <button onclick="window.print()">Drucken / Als PDF sichern</button> <span class="m">Fotos antippen = vergrößern</span>
   <h1>ParkWatch Quartier – Verkehrs- &amp; Sicherheitsbericht</h1><div class="m">Zeitraum ${esc(d0)} – ${esc(d1)} · ${n} Fall${n === 1 ? '' : 'e'} · erstellt ${esc(new Date().toLocaleDateString('de-DE'))} · Kennzeichen anonymisiert</div>
   <h2>Auswertung</h2><div class="kpi"><div><b>${n}</b>Fälle</div><div><b>${cnt((r) => r.flags?.behinderung || r.flags?.gefaehrdung)}</b>mit Behinderung/Gefährdung</div><div><b>${cnt((r) => r.isSchoolRoute)}</b>Schul-/Kitaweg</div><div><b>${cnt((r) => r.rescueRoute || r.flags?.rettung)}</b>Rettungsweg</div><div><b>${cnt((r) => /LKW|Transporter|Anhänger|Wohnmobil/.test(r.vehicleType || ''))}</b>gewerbl./groß</div><div><b>${sum} €</b>Summe Regelsätze (Orientierung)</div></div>
   <h2>Hotspots (Straßen)</h2><table>${hot}</table><h2>Erfasste Fälle</h2>${cases}
-  <p class="m">Hinweis: Die App ist eine private Dokumentationshilfe. Tatbestände und Beträge sind Orientierungswerte; die Bewertung obliegt der zuständigen Behörde.</p></body></html>`;
+  <script>document.addEventListener('click',function(e){var t=e.target;if(t.tagName==='IMG')t.classList.toggle('big')})</script><p class="m">Hinweis: Die App ist eine private Dokumentationshilfe. Tatbestände und Beträge sind Orientierungswerte; die Bewertung obliegt der zuständigen Behörde.</p></body></html>`;
 }
 async function printReport() {
   if (!S.records.length) return toast('Keine Fälle vorhanden');
@@ -780,6 +809,20 @@ async function printReport() {
   if (!touch) { const w = window.open(URL.createObjectURL(blob), '_blank'); if (w) { setTimeout(() => { try { w.print(); } catch (e) { /* manuell */ } }, 800); return; } }
   await shareOrDownload(`ParkWatch_Bericht_${new Date().toISOString().slice(0, 10)}.html`, blob);
   toast('Bericht-Datei geöffnet/geteilt – dort „Drucken / Als PDF sichern“ wählen', 4500);
+}
+/* Vollbild-Ansicht (Antippen = Zoom, Wischen = verschieben); mehrere Bilder nacheinander */
+function openLightbox(srcs, caption) {
+  const list = Array.isArray(srcs) ? srcs : [srcs]; let idx = 0, zoom = false; const lb = $('lightbox'), im = $('lbImg');
+  const show = () => { im.src = list[idx]; im.style.width = zoom ? '250%' : '100%'; $('lbCap').textContent = (caption || '') + (list.length > 1 ? ` · ${idx + 1}/${list.length}` : ''); $('lbNext').style.display = list.length > 1 ? '' : 'none'; };
+  im.onclick = () => { zoom = !zoom; show(); };
+  $('lbNext').onclick = () => { idx = (idx + 1) % list.length; zoom = false; show(); lb.scrollTo(0, 0); };
+  $('lbShare').onclick = async () => { const b = await (await fetch(list[idx])).blob(); await shareOrDownload(`ParkWatch_Foto_${Date.now()}.jpg`, b); };
+  $('lbClose').onclick = () => { lb.classList.add('hidden'); im.src = ''; };
+  show(); lb.classList.remove('hidden'); lb.scrollTo(0, 0);
+}
+function openCurrentFull() {
+  const p = S.cur.photos[S.cur.active]; if (!p) return; const cv = document.createElement('canvas'); drawPhoto(cv, p, false, !S.peek);
+  openLightbox(cv.toDataURL('image/jpeg', 0.92), S.peek ? 'Original (ohne Balken) – nur lokal' : 'Foto mit Balken');
 }
 async function exportCsv(withPlate) {
   if (!S.records.length) return toast('Keine Daten vorhanden');
@@ -811,7 +854,7 @@ function switchTab(t) {
 function loadSettings() { try { Object.assign(S.settings, JSON.parse(localStorage.getItem('pw_settings') || '{}')); } catch (e) {} }
 function saveSettings() { try { localStorage.setItem('pw_settings', JSON.stringify(S.settings)); } catch (e) {} }
 async function openSettings() {
-  $('sAiOn').checked = S.settings.aiOn; $('sAiKey').value = S.settings.aiKey; $('sAiModel').value = S.settings.aiModel; $('sAiAuto').checked = S.settings.aiAuto; $('sStand').textContent = CATALOG_STAND; $('sVer').textContent = 'v' + APP_VERSION;
+  $('sAiOn').checked = S.settings.aiOn; $('sAiKey').value = S.settings.aiKey; $('sAiModel').value = S.settings.aiModel; $('sAiAuto').checked = S.settings.aiAuto; $('sKeepOrig').checked = S.settings.keepOrig !== false; $('sStand').textContent = CATALOG_STAND; $('sVer').textContent = 'v' + APP_VERSION;
   try { const e = await navigator.storage.estimate(); const p = navigator.storage.persisted ? await navigator.storage.persisted() : false; $('sStorage').textContent = `Belegt: ${(e.usage / 1048576).toFixed(1)} MB von ca. ${(e.quota / 1048576).toFixed(0)} MB · Dauerhaft geschützt: ${p ? 'ja' : 'nein'}`; } catch (e) { $('sStorage').textContent = 'Speicherinfo nicht verfügbar'; }
   $('settings').classList.remove('hidden');
 }
@@ -898,13 +941,14 @@ async function init() {
   $('btnSave').onclick = save; $('btnNew').onclick = () => { if (S.dirty && !S.savedId && (S.cur.photos.length || S.cur.plate) && !confirm('Ungespeicherten Fall verwerfen?')) return; newCase(); };
   $('tabCapture').onclick = () => switchTab('capture'); $('tabStats').onclick = () => switchTab('stats');
   $('btnPrint').onclick = printReport;
+  $('btnPeek').onclick = () => { S.peek = !S.peek; renderPhoto(); }; $('btnFull').onclick = openCurrentFull;
   $('btnCsvAnon').onclick = () => exportCsv(false); $('btnCsvFull').onclick = () => exportCsv(true); $('btnBackup').onclick = exportBackup;
   $('inImport').addEventListener('change', (e) => { if (e.target.files[0]) importBackup(e.target.files[0]); e.target.value = ''; });
   $('repRecords').addEventListener('click', (e) => { const b = e.target.closest('[data-open]'); if (b) openDetail(+b.dataset.open); });
   $('mClose').onclick = () => $('modal').classList.add('hidden');
   $('btnSettings').onclick = openSettings;
   $('sClose').onclick = $('sSave').onclick = () => {
-    S.settings.aiOn = $('sAiOn').checked; S.settings.aiKey = $('sAiKey').value.trim(); S.settings.aiModel = $('sAiModel').value.trim() || 'claude-sonnet-5-5'; S.settings.aiAuto = $('sAiAuto').checked;
+    S.settings.aiOn = $('sAiOn').checked; S.settings.aiKey = $('sAiKey').value.trim(); S.settings.aiModel = $('sAiModel').value.trim() || 'claude-sonnet-5-5'; S.settings.aiAuto = $('sAiAuto').checked; S.settings.keepOrig = $('sKeepOrig').checked;
     saveSettings(); applyAiVisibility(); $('settings').classList.add('hidden');
   };
   $('sOcrTest').onclick = ocrSelfTest;

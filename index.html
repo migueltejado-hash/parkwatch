@@ -55,10 +55,12 @@
           <div id="tapHint" class="hidden absolute bottom-2 left-2 bg-slate-950/85 border border-slate-700 rounded-lg px-2 py-1 text-[10px] text-slate-300"><i class="fa-solid fa-hand-pointer text-emerald-400 mr-1"></i>Aufs Kennzeichen tippen = Balken setzen + lesen</div>
         </div>
 
-        <div id="photoTools" class="hidden grid grid-cols-4 gap-2">
+        <div id="photoTools" class="hidden grid gap-2" style="grid-template-columns:repeat(6,1fr)">
           <button id="btnUndoBox" class="btn py-2.5 text-xs" title="Letzten Balken entfernen"><i class="fa-solid fa-rotate-left"></i></button>
           <button id="btnBoxSmaller" class="btn py-2.5 text-xs" title="Balken kleiner"><i class="fa-solid fa-minus"></i></button>
           <button id="btnBoxBigger" class="btn py-2.5 text-xs" title="Balken größer"><i class="fa-solid fa-plus"></i></button>
+          <button id="btnPeek" class="btn py-2.5 text-xs" title="Balken kurz ausblenden (Original ansehen)"><i class="fa-solid fa-eye"></i></button>
+          <button id="btnFull" class="btn py-2.5 text-xs" title="Vollbild"><i class="fa-solid fa-expand"></i></button>
           <button id="btnRemovePhoto" class="btn py-2.5 text-xs text-rose-300" title="Foto entfernen"><i class="fa-solid fa-trash"></i></button>
         </div>
 
@@ -260,6 +262,17 @@
     </div>
   </nav>
 
+  <!-- VOLLBILD -->
+  <div id="lightbox" class="hidden" style="position:fixed;inset:0;z-index:70;background:#000;overflow:auto;-webkit-overflow-scrolling:touch">
+    <img id="lbImg" alt="" style="width:100%;display:block;cursor:zoom-in">
+    <div style="position:fixed;top:0;left:0;right:0;display:flex;gap:8px;align-items:center;padding:calc(env(safe-area-inset-top) + 8px) 10px 8px;background:rgba(0,0,0,.65)">
+      <span id="lbCap" class="text-[11px] text-slate-200 flex-1"></span>
+      <button id="lbNext" class="btn px-3 py-2 text-xs" aria-label="Nächstes Bild"><i class="fa-solid fa-forward-step"></i></button>
+      <button id="lbShare" class="btn px-3 py-2 text-xs" aria-label="Teilen / Sichern"><i class="fa-solid fa-share-nodes"></i></button>
+      <button id="lbClose" class="btn px-3 py-2 text-xs" aria-label="Schließen"><i class="fa-solid fa-xmark"></i></button>
+    </div>
+  </div>
+
   <!-- DETAIL-MODAL -->
   <div id="modal" class="hidden fixed inset-0 bg-slate-950/85 z-50 p-3 flex items-center justify-center no-print">
     <div class="bg-slate-900 border border-slate-800 rounded-2xl max-w-sm w-full p-3 space-y-3 shadow-2xl overflow-y-auto" style="max-height:92vh">
@@ -269,6 +282,7 @@
       </div>
       <div id="mImgs" class="flex gap-2 overflow-x-auto no-scrollbar"></div>
       <div id="mBody" class="space-y-1.5 text-xs"></div>
+      <button id="mOrig" class="hidden btn w-full py-3 text-xs"><i class="fa-solid fa-eye text-amber-300"></i>Original ansehen (nur lokal) – Kennzeichen prüfen</button>
       <div class="grid grid-cols-3 gap-2">
         <a id="mMaps" href="#" target="_blank" rel="noopener noreferrer" class="btn py-3 text-xs"><i class="fa-solid fa-map text-emerald-400"></i>Karte</a>
         <button id="mEdit" class="btn py-3 text-xs"><i class="fa-solid fa-pen text-cyan-400"></i>Ändern</button>
@@ -298,6 +312,12 @@
         <p class="text-xs font-semibold">Kennzeichen-Erkennung</p>
         <button id="sOcrTest" class="btn w-full py-3 text-xs"><i class="fa-solid fa-stethoscope text-emerald-400"></i>OCR-Test starten</button>
         <pre id="sOcrOut" class="text-[10px] text-slate-300 whitespace-pre-wrap break-words bg-slate-950 border border-slate-800 rounded-lg p-2 select-text"></pre>
+      </div>
+
+      <div class="space-y-2 border-t border-slate-800 pt-3">
+        <p class="text-xs font-semibold">Originalfotos</p>
+        <label class="tog"><span>Originale lokal aufbewahren (zum Prüfen des Kennzeichens)</span><input id="sKeepOrig" type="checkbox" class="w-5 h-5 accent-emerald-500"></label>
+        <p class="text-[11px] text-slate-400">Die unzensierten Fotos bleiben nur auf diesem Gerät. Berichte, CSV und Backup enthalten sie nie. Beim Löschen eines Falls werden sie mitgelöscht.</p>
       </div>
 
       <div class="space-y-2 border-t border-slate-800 pt-3">
