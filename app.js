@@ -1,5 +1,5 @@
 /* ParkWatch Quartier v2.0 – Anwendungslogik (offline-first, keine Build-Abhängigkeit zur Laufzeit) */
-const APP_VERSION = "2.6.2";
+const APP_VERSION = "2.6.3";
 'use strict';
 
 const $ = (id) => document.getElementById(id);
@@ -500,7 +500,8 @@ async function getOcr() {
   await worker.setParameters({ tessedit_char_whitelist: 'ABCDEFGHIJKLMNOPQRSTUVWXYZÄÖÜ0123456789 -', tessedit_pageseg_mode: '7' });
   S.ocr = worker; return worker;
 }
-async function runOcr(photo) {
+async function runOcr(photo, force = false) {
+  if (force) photo.boxes = [];
   S.ocrBusy++; setOcrStatus('busy', 'Suche Kennzeichen …');
   try {
     const src = photo.hi || photo.orig, kk = photo.orig.width / src.width;
@@ -509,7 +510,7 @@ async function runOcr(photo) {
     if (cands.length) {
       for (const c of cands) { const b = padBox(c.box, src, 0.15, 0.25); photo.boxes.push({ x: b.x * kk, y: b.y * kk, w: b.w * kk, h: b.h * kk }); }
       const main = cands[0].text, unsure = !(cands[0].votes >= 2) || !cityOk(main);
-      if (!S.cur.plate) { S.cur.plate = main; S.cur.plateSource = 'ocr'; $('inPlate').value = main; renderPlateBadge(); }
+      if (force || !S.cur.plate) { S.cur.plate = main; S.cur.plateSource = 'ocr'; $('inPlate').value = main; renderPlateBadge(); }
       if (unsure) setOcrStatus('warn', `Kennzeichen „${main}“ UNSICHER gelesen – bitte prüfen/korrigieren (${cands.length} Balken gesetzt)`);
       else setOcrStatus('ok', `${cands.length} Kennzeichen erkannt & geschwärzt – bitte prüfen`);
     } else setOcrStatus('warn', 'Kein Kennzeichen erkannt – tippe aufs Kennzeichen');
@@ -519,8 +520,15 @@ async function runOcr(photo) {
   } finally {
     S.ocrBusy--; renderPhoto(); renderThumbs(); markDirty();
     setTimeout(() => { if (!S.ocrBusy) $('ocrStatus').classList.add('hidden'); }, 6000);
-    if (S.settings.aiOn && S.settings.aiAuto && S.settings.aiKey) aiRecognize(true);
+    if (!force && S.settings.aiOn && S.settings.aiAuto && S.settings.aiKey) aiRecognize(true);
   }
+}
+async function rereadPlate() {
+  if (S.ocrBusy) return toast('Erkennung läuft noch …');
+  const p = S.cur.photos.find((x) => !x.doc && !x.locked);
+  if (!p) return toast(S.cur.photos.length ? 'Nicht möglich: nur das geschwärzte Foto ist gespeichert (kein Original)' : 'Zuerst ein Foto aufnehmen', 3500);
+  if (p.boxes.length && !confirm('Vorhandene Balken auf diesem Foto werden ersetzt und das Kennzeichen-Feld neu befüllt. Fortfahren?')) return;
+  $('btnReread').disabled = true; await runOcr(p, true); $('btnReread').disabled = false;
 }
 function padBox(b, o, px, py) {
   const w = b.x1 - b.x0, h = b.y1 - b.y0, x = Math.max(0, b.x0 - w * px), y = Math.max(0, b.y0 - h * py);
@@ -1185,6 +1193,7 @@ async function init() {
   $('typeChips').addEventListener('click', (e) => { const b = e.target.closest('[data-vt]'); if (!b) return; S.cur.vtype = b.dataset.vt; S.cur.manual.vtype = true; renderVehicle(); markDirty(); });
   $('colorChips').addEventListener('click', (e) => { const b = e.target.closest('[data-color]'); if (!b) return; S.cur.color = S.cur.color === b.dataset.color ? '' : b.dataset.color; S.cur.manual.color = true; renderVehicle(); markDirty(); });
   $('btnAI').onclick = () => aiRecognize(false);
+  $('btnReread').onclick = rereadPlate;
 
   $('togSchool').addEventListener('change', (e) => { S.cur.school = e.target.checked; markDirty(); });
   $('togRescue').addEventListener('change', (e) => { S.cur.rescue = e.target.checked; markDirty(); });
