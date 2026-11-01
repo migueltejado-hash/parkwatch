@@ -1,5 +1,5 @@
 /* ParkWatch Quartier v2.0 – Anwendungslogik (offline-first, keine Build-Abhängigkeit zur Laufzeit) */
-const APP_VERSION = "2.6.1";
+const APP_VERSION = "2.6.2";
 'use strict';
 
 const $ = (id) => document.getElementById(id);
@@ -634,8 +634,9 @@ async function aiRecognize(silent = false) {
   const s = S.settings, p = S.cur.photos[0];
   if (!s.aiOn || !s.aiKey) { if (!silent) toast('KI in den Einstellungen aktivieren'); return; }
   if (!p) { if (!silent) toast('Zuerst ein Foto aufnehmen'); return; }
-  if (!p.boxes.length && !silent && !confirm('Es ist noch kein Kennzeichen geschwärzt. Foto trotzdem an die KI senden?')) return;
-  if (!p.boxes.length && silent) return;           // automatisch nie ungeschwärzt senden
+  const pre = !!p.locked;                           // gespeichertes Foto ohne Original: Kennzeichen ist bereits im Bild geschwärzt
+  if (!pre && !p.boxes.length && !silent && !confirm('Es ist noch kein Kennzeichen geschwärzt. Foto trotzdem an die KI senden?')) return;
+  if (!pre && !p.boxes.length && silent) return;           // automatisch nie ungeschwärzt senden
   if (!navigator.onLine) { if (!silent) toast('Offline – KI nicht erreichbar'); return; }
   const btn = $('btnAI'); btn.disabled = true; btn.innerHTML = '<i class="fa-solid fa-spinner animate-spin mr-1"></i>erkenne …';
   try {
@@ -658,7 +659,7 @@ async function aiRecognize(silent = false) {
     if (j.modell && !c.manual.model) c.model = j.modell;
     if (VEHICLE_TYPES.includes(j.klasse) && !c.manual.vtype) c.vtype = j.klasse;
     if (VEHICLE_COLORS.some(([n]) => n === j.farbe) && !c.manual.color) c.color = j.farbe;
-    c.aiFilled = true; renderVehicle(); markDirty();
+    c.aiFilled = true; renderVehicle(); markDirty(); if (!silent) toast('KI-Vorschlag übernommen – bitte prüfen', 2500);
     const n = $('aiNote'); n.textContent = `KI-Vorschlag (Sicherheit: ${j.sicherheit || '?'}) – bitte prüfen und ggf. korrigieren.`; n.classList.remove('hidden');
   } catch (e) { console.warn(e); if (!silent) toast('KI-Erkennung fehlgeschlagen (' + e.message + ')', 3500); }
   finally { btn.disabled = false; btn.innerHTML = '<i class="fa-solid fa-wand-magic-sparkles mr-1"></i>KI-Erkennung'; }
