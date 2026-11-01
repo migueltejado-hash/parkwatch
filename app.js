@@ -1,5 +1,5 @@
 /* ParkWatch Quartier v2.0 – Anwendungslogik (offline-first, keine Build-Abhängigkeit zur Laufzeit) */
-const APP_VERSION = "2.6.0";
+const APP_VERSION = "2.6.1";
 'use strict';
 
 const $ = (id) => document.getElementById(id);
@@ -176,8 +176,13 @@ function loadImage(file) {
 }
 function scaledCanvas(src, maxPx) {
   const w = src.naturalWidth || src.width, h = src.naturalHeight || src.height, k = Math.min(1, maxPx / Math.max(w, h));
-  const c = document.createElement('canvas'); c.width = Math.round(w * k); c.height = Math.round(h * k);
-  c.getContext('2d').drawImage(src, 0, 0, c.width, c.height); return c;
+  const tw = Math.round(w * k), th = Math.round(h * k); let cur = src, cw = w, ch = h;
+  while (cw / 2 >= tw && ch / 2 >= th) {        // schrittweise halbieren: erhält Schrift/Kennzeichen besser als ein großer Sprung
+    const c = document.createElement('canvas'); c.width = Math.round(cw / 2); c.height = Math.round(ch / 2);
+    const g = c.getContext('2d'); g.imageSmoothingQuality = 'high'; g.drawImage(cur, 0, 0, c.width, c.height); cur = c; cw = c.width; ch = c.height;
+  }
+  const c = document.createElement('canvas'); c.width = tw; c.height = th;
+  const g = c.getContext('2d'); g.imageSmoothingQuality = 'high'; g.drawImage(cur, 0, 0, tw, th); return c;
 }
 function canvasFromUrl(url) {
   return new Promise((resolve, reject) => { const i = new Image(); i.onload = () => resolve(scaledCanvas(i, MAX_ORIG_PX)); i.onerror = reject; i.src = url; });
@@ -195,7 +200,8 @@ async function addPhoto(file) {
   const ts = (meta && (meta.DateTimeOriginal || meta.CreateDate)) ? new Date(meta.DateTimeOriginal || meta.CreateDate).getTime() : Date.now();
   S.peek = false;
   const first = S.cur.photos.length === 0;
-  const photo = { orig: canvas, origUrl: canvas.toDataURL('image/jpeg', 0.9), boxes: [], ts, out: null, doc: !first };   // doc = Zusatzfoto nur zur Dokumentation (keine Kennzeichen-Suche)
+  const photo = { orig: canvas, origUrl: canvas.toDataURL('image/jpeg', 0.9), boxes: [], ts, out: null, doc: !first };
+  const fullW = img.naturalWidth || img.width; if (first && fullW > canvas.width * 1.15) { try { photo.hi = scaledCanvas(img, 3600); } catch (e) { /* Speicher */ } }   // mehr Pixel fürs Kennzeichen   // doc = Zusatzfoto nur zur Dokumentation (keine Kennzeichen-Suche)
   S.cur.photos.push(photo); S.cur.active = S.cur.photos.length - 1;
 
   if (first) {
@@ -326,6 +332,8 @@ function parsePlate(tin, strict = false) {
 /* Häufiger OCR-Fehler: das „D“ des EU-Streifens klebt am Ortskürzel („DHD AM 2330“) oder steht als Einzelbuchstabe davor. */
 const KZ2 = new Set('AA AB AC AE AH AK AM AN AP AS AW AZ BA BB BC BD BE BI BL BM BN BO BS BT BZ CB CE CO CW DA DD DE DH DL DM DN DO DU DW DZ EA EB ED EE EF EH EI EL EM EN ER ES EU FB FD FF FG FL FN FO FR FS FT FU FW GA GC GD GE GF GG GI GL GM GN GP GR GS GT GZ HA HB HC HD HE HF HG HH HI HK HL HM HN HO HP HR HS HU HV HX HY HZ IK IN IZ JE JL KA KB KC KE KF KG KH KI KL KM KN KO KR KS KT KU KW KY LA LB LC LD LDS LG LH LI LL LM LN LO LP LR LU MA MB MC MD ME MG MH MI MK ML MM MN MO MQ MR MS MT MW MY MZ NB ND NE NF NH NI NK NM NN NO NP NR NT NU NW NY NZ OA OB OC OD OE OF OG OH OK OL OM ON OP OS OT OZ PA PB PE PF PI PL PM PN PR PS RA RB RC RD RE RG RH RL RM RN RO RP RS RT RV RW RZ SB SC SE SG SH SI SK SL SM SN SO SP SR ST SU SW SY SZ TF TG TO TP TS TT TÜ UE UH UL UM UN VB VG VK VR VS WA WB WD WE WF WG WI WK WL WM WN WO WR WS WT WN WU WW WZ ZE ZI ZW'.split(' '));
 const KZ_D3 = new Set(['DAH', 'DAN', 'DAU', 'DBR', 'DEG', 'DEL', 'DGF', 'DIL', 'DIN', 'DIZ', 'DLG', 'DON', 'DUD', 'DÜW']);
+const KZ1 = new Set('B C D E F G H K L M N P R S V W'.split(' '));
+function cityOk(text) { const c = String(text).split(' ')[0]; return c.length === 1 ? KZ1.has(c) : c.length === 2 ? KZ2.has(c) : true; }
 function cleanPlate(t) {
   let m = String(t).match(/^([A-ZÄÖÜ]{1,3}) ([A-Z]{1,2}) (\d{1,4}[EH]?)$/);
   if (m) { const c = m[1]; if (c.length === 3 && c[0] === 'D' && !KZ_D3.has(c) && KZ2.has(c.slice(1))) return c.slice(1) + ' ' + m[2] + ' ' + m[3]; return t; }
@@ -441,7 +449,7 @@ async function readPlateRegion(canvas, r, maxV = 9) {
     if (c) { const e = votes.get(c.text) || { n: 0, conf: 0 }; e.n++; e.conf = Math.max(e.conf, data.confidence || 0); votes.set(c.text, e); if (e.n >= 2) break; }
   }
   if (!votes.size) return null;
-  const [text, e] = [...votes.entries()].sort((a, b) => b[1].n - a[1].n || b[1].conf - a[1].conf)[0];
+  const rank = ([t, v]) => v.n + (cityOk(t) ? 1.5 : 0), [text, e] = [...votes.entries()].sort((a, b) => rank(b) - rank(a) || b[1].conf - a[1].conf)[0];
   return { text, conf: e.conf, votes: e.n };
 }
 async function ocrPlatesIn(canvas, maxRegions = 4) {
@@ -455,7 +463,7 @@ async function ocrPlatesIn(canvas, maxRegions = 4) {
     if (res.votes < 2 && res.text.replace(/ /g, '').length < 6) continue;   // Einzeltreffer nur bei ausreichend langem Kennzeichen (Fehlalarme)
     found.push({ ...res, box: { x0: r.x, y0: r.y, x1: r.x + r.w, y1: r.y + r.h } });
   }
-  found.sort((a, b) => b.votes - a.votes || b.conf - a.conf); const kept = [];
+  found.sort((a, b) => (b.votes + (cityOk(b.text) ? 1.5 : 0)) - (a.votes + (cityOk(a.text) ? 1.5 : 0)) || b.conf - a.conf); const kept = [];
   for (const f of found) if (!kept.some((q) => overlap(q.box, f.box) > 0.3)) kept.push(f);
   return kept;
 }
@@ -495,13 +503,15 @@ async function getOcr() {
 async function runOcr(photo) {
   S.ocrBusy++; setOcrStatus('busy', 'Suche Kennzeichen …');
   try {
-    let cands = await ocrPlatesIn(photo.orig);
-    if (!cands.length) cands = await ocrTiles(photo.orig);
+    const src = photo.hi || photo.orig, kk = photo.orig.width / src.width;
+    let cands = await ocrPlatesIn(src);
+    if (!cands.length) cands = await ocrTiles(src);
     if (cands.length) {
-      for (const c of cands) photo.boxes.push(padBox(c.box, photo.orig, 0.15, 0.25));
-      const main = cands[0].text;
+      for (const c of cands) { const b = padBox(c.box, src, 0.15, 0.25); photo.boxes.push({ x: b.x * kk, y: b.y * kk, w: b.w * kk, h: b.h * kk }); }
+      const main = cands[0].text, unsure = !(cands[0].votes >= 2) || !cityOk(main);
       if (!S.cur.plate) { S.cur.plate = main; S.cur.plateSource = 'ocr'; $('inPlate').value = main; renderPlateBadge(); }
-      setOcrStatus('ok', `${cands.length} Kennzeichen erkannt & geschwärzt – bitte prüfen`);
+      if (unsure) setOcrStatus('warn', `Kennzeichen „${main}“ UNSICHER gelesen – bitte prüfen/korrigieren (${cands.length} Balken gesetzt)`);
+      else setOcrStatus('ok', `${cands.length} Kennzeichen erkannt & geschwärzt – bitte prüfen`);
     } else setOcrStatus('warn', 'Kein Kennzeichen erkannt – tippe aufs Kennzeichen');
     S.ocrErr = null;
   } catch (e) {
@@ -531,13 +541,16 @@ async function tapCensor(ev) {
   // Kennzeichen-Region unter dem Finger suchen (ganzes Bild), sonst Bereich um den Tipp-Punkt
   try {
     setOcrStatus('busy', 'Lese Kennzeichen …'); S.dbg = { regions: 0, reads: [], tiles: 0 };
-    const regs = findPlateRegions(p.orig);
-    const hit = regs.filter((r) => x >= r.x - r.w * 0.15 && x <= r.x + r.w * 1.15 && y >= r.y - r.h * 0.8 && y <= r.y + r.h * 1.8).sort((a, b) => b.score - a.score)[0];
-    const tries = hit ? [hit] : [{ x: box.x, y: box.y, w: box.w, h: box.h }, { x: box.x - box.w * 0.25, y: box.y - box.h * 0.2, w: box.w * 1.5, h: box.h * 1.4 }];
+    const src = p.hi || p.orig, kk = src.width / p.orig.width, X = x * kk, Y = y * kk;
+    const regs = findPlateRegions(src);
+    const hit = regs.filter((r) => X >= r.x - r.w * 0.15 && X <= r.x + r.w * 1.15 && Y >= r.y - r.h * 0.8 && Y <= r.y + r.h * 1.8).sort((a, b) => b.score - a.score)[0];
+    const bs = { x: box.x * kk, y: box.y * kk, w: box.w * kk, h: box.h * kk };
+    const tries = hit ? [hit] : [bs, { x: bs.x - bs.w * 0.25, y: bs.y - bs.h * 0.2, w: bs.w * 1.5, h: bs.h * 1.4 }];
     let res = null, used = null;
-    for (const r of tries) { res = await readPlateRegion(p.orig, r); if (res) { used = r; break; } }
+    for (const r of tries) { res = await readPlateRegion(src, r); if (res) { used = r; break; } }
     if (res) {
-      p.boxes[p.boxes.indexOf(box)] = padBox({ x0: used.x, y0: used.y, x1: used.x + used.w, y1: used.y + used.h }, p.orig, 0.15, 0.25);
+      const pb = padBox({ x0: used.x, y0: used.y, x1: used.x + used.w, y1: used.y + used.h }, src, 0.15, 0.25);
+      p.boxes[p.boxes.indexOf(box)] = { x: pb.x / kk, y: pb.y / kk, w: pb.w / kk, h: pb.h / kk };
       $('inPlate').value = res.text; S.cur.plate = res.text; S.cur.plateSource = 'ocr'; renderPlateBadge();
       setOcrStatus('ok', `Gelesen: ${res.text} – bitte prüfen`);
     } else setOcrStatus('warn', hit ? 'Balken gesetzt – Kennzeichen nicht lesbar, bitte eintippen' : 'Balken gesetzt – Kennzeichen bitte von Hand eintippen');
@@ -703,6 +716,7 @@ async function save() {
   } catch (err) { console.error(err); toast('Speichern fehlgeschlagen: ' + (err && err.name === 'QuotaExceededError' ? 'Speicher voll' : 'Datenbankfehler'), 4500); }
 }
 function newCase(silent) {
+  S.cur.photos.forEach((p) => { delete p.hi; });
   S.cur = emptyCase(); S.editId = null; S.savedId = null; S.dirty = true;
   $('inPlate').value = ''; $('inNotes').value = ''; $('inRest').value = ''; $('togSchool').checked = false; $('togRescue').checked = false;
   $('inCamera').value = ''; $('inGallery').value = ''; $('aiNote').classList.add('hidden'); $('ocrStatus').classList.add('hidden');
