@@ -35,6 +35,12 @@
       </div>
     </div>
   </header>
+  <div id="backupBar" class="no-print" style="display:none;flex-shrink:0;align-items:center;gap:8px;padding:6px 12px;background:#451a03;border-bottom:1px solid #92400e">
+    <i class="fa-solid fa-triangle-exclamation" style="color:#fbbf24"></i>
+    <span id="backupTxt" class="text-[11px]" style="flex:1;color:#fde68a"></span>
+    <button id="btnBackupNow" class="btn px-3 py-1.5 text-[11px]">Jetzt sichern</button>
+  </div>
+
 
   <!-- INHALT -->
   <main id="scroller" class="flex-1 overflow-y-auto no-scrollbar relative">
@@ -234,9 +240,9 @@
         <div class="grid grid-cols-2 gap-2">
           <button id="btnCsvAnon" class="btn py-3 text-xs"><i class="fa-solid fa-file-csv text-emerald-400"></i>CSV anonym</button>
           <button id="btnCsvFull" class="btn py-3 text-xs"><i class="fa-solid fa-file-csv text-amber-400"></i>CSV mit Kz.</button>
-          <button id="btnBackup" class="btn py-3 text-xs"><i class="fa-solid fa-box-archive text-cyan-400"></i>Backup (JSON)</button>
-          <label for="inImport" class="btn py-3 text-xs cursor-pointer"><i class="fa-solid fa-file-import text-cyan-400"></i>Backup laden</label>
-          <input id="inImport" type="file" accept="application/json,.json" class="hidden">
+          <button id="btnBackup" class="btn py-3 text-xs"><i class="fa-solid fa-box-archive text-cyan-400"></i>Backup (JSON, mit Originalen)</button>
+          <label for="inImport" class="btn py-3 text-xs cursor-pointer"><i class="fa-solid fa-file-import text-cyan-400"></i>Backup / Bericht laden</label>
+          <input id="inImport" type="file" accept="application/json,.json,text/html,.html,.htm" class="hidden">
         </div>
         <p class="text-[10px] text-slate-500">„CSV anonym" und der Druckbericht enthalten keine Kennzeichen – für Rathaus/Gemeinderat. „CSV mit Kz." und Backup nur für die eigene Ablage.</p>
       </div>

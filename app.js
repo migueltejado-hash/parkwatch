@@ -1,5 +1,5 @@
 /* ParkWatch Quartier v2.0 – Anwendungslogik (offline-first, keine Build-Abhängigkeit zur Laufzeit) */
-const APP_VERSION = "2.2.0";
+const APP_VERSION = "2.3.0";
 'use strict';
 
 const $ = (id) => document.getElementById(id);
@@ -670,6 +670,7 @@ async function save() {
       if (ps.some((p) => !p.locked)) { await origDel(rid); for (let i = 0; i < ps.length; i++) { const p = ps[i]; if (p.locked) continue; await origPut({ key: rid + ':' + i, i, img: p.origUrl, boxes: p.boxes, ts: p.ts, doc: !!p.doc }); any = true; } }
       if (any && !rec.hasOrig) { rec.id = rid; rec.hasOrig = true; await dbPut(rec); }
     }
+    S.settings.unbacked = (S.settings.unbacked || 0) + 1; saveSettings(); syncBackupBar(); try { navigator.storage?.persist?.(); } catch (e) { /* egal */ }
     await draftDel(); $('draftBadge').classList.add('hidden'); S.peek = false;
     S.dirty = false; setSaveButton(); toast('Gespeichert'); refreshStats();
   } catch (err) { console.error(err); toast('Speichern fehlgeschlagen: ' + (err && err.name === 'QuotaExceededError' ? 'Speicher voll' : 'Datenbankfehler'), 4500); }
@@ -702,6 +703,8 @@ function bar(label, count, total, extra = '') {
 }
 async function refreshStats() {
   const rs = (S.records = (await dbAll()).sort((a, b) => a.timestamp.localeCompare(b.timestamp))); const n = rs.length;
+  if (n && !S.settings.lastBackup && !S.settings.unbacked) { S.settings.unbacked = n; saveSettings(); }
+  syncBackupBar(n);
   $('countBadge').textContent = n;
   const empty = '<div class="text-slate-500 italic text-xs py-1">Keine Daten.</div>';
   if (!n) { $('kpis').innerHTML = ''; ['repHotspots', 'repTbnr', 'repTime', 'repTypes'].forEach((i) => ($(i).innerHTML = empty)); $('repRecords').innerHTML = '<div class="text-center py-8 text-slate-500 text-xs">Noch keine Fälle.</div>'; $('repFines').textContent = '0 €'; $('repPeriod').textContent = 'Noch keine Daten'; return; }
@@ -770,8 +773,8 @@ async function editRecord(r) {
 /* ---------- Export / Import ---------- */
 async function shareOrDownload(name, blob) {
   const file = new File([blob], name, { type: blob.type });
-  if (navigator.canShare && navigator.canShare({ files: [file] })) { try { await navigator.share({ files: [file], title: name }); return; } catch (e) { if (e.name === 'AbortError') return; } }
-  const url = URL.createObjectURL(blob); const a = document.createElement('a'); a.href = url; a.download = name; document.body.appendChild(a); a.click(); a.remove(); setTimeout(() => URL.revokeObjectURL(url), 4000);
+  if (navigator.canShare && navigator.canShare({ files: [file] })) { try { await navigator.share({ files: [file], title: name }); return true; } catch (e) { if (e.name === 'AbortError') return false; } }
+  const url = URL.createObjectURL(blob); const a = document.createElement('a'); a.href = url; a.download = name; document.body.appendChild(a); a.click(); a.remove(); setTimeout(() => URL.revokeObjectURL(url), 4000); return true;
 }
 const csvCell = (v) => { let s = v == null ? '' : String(v); if (/^[=+\-@\t\r]/.test(s)) s = "'" + s; return '"' + s.replace(/"/g, '""') + '"'; };
 /* Bericht als eigenständige HTML-Datei (druckfreundlich, anonym: ohne Kennzeichen). iOS-PWA kann window.print() nicht zuverlässig. */
@@ -833,14 +836,62 @@ async function exportCsv(withPlate) {
 }
 async function exportBackup() {
   if (!S.records.length) return toast('Keine Daten vorhanden');
-  await shareOrDownload(`ParkWatch_Backup_${new Date().toISOString().slice(0, 10)}.json`, new Blob([JSON.stringify({ app: 'ParkWatch', version: 2, exported: new Date().toISOString(), records: S.records })], { type: 'application/json' }));
+  const parts = ['{"app":"ParkWatch","version":3,"exported":' + JSON.stringify(new Date().toISOString()) + ',"records":' + JSON.stringify(S.records) + ',"originals":{'];
+  let first = true, nOrig = 0;
+  for (const r of S.records) { if (!r.hasOrig) continue; const os = await origGet(r.id).catch(() => []); if (!os.length) continue; parts.push((first ? '' : ',') + JSON.stringify(String(r.id)) + ':' + JSON.stringify(os)); first = false; nOrig += os.length; }
+  parts.push('}}');
+  const ok = await shareOrDownload(`ParkWatch_Backup_${new Date().toISOString().slice(0, 10)}.json`, new Blob(parts, { type: 'application/json' }));
+  if (ok) { S.settings.unbacked = 0; S.settings.lastBackup = new Date().toISOString(); saveSettings(); syncBackupBar(); toast(`Backup erstellt (${S.records.length} Fälle${nOrig ? ', ' + nOrig + ' Originale' : ''}) – in „Dateien“/iCloud sichern`, 4500); }
+}
+function syncBackupBar(n = S.records.length) {
+  const u = S.settings.unbacked || 0, bar = $('backupBar'); if (!bar) return;
+  const show = n > 0 && u > 0; bar.style.display = show ? 'flex' : 'none';
+  if (show) $('backupTxt').textContent = `${u} ${u === 1 ? 'Änderung' : 'Änderungen'} nicht gesichert`;
+}
+/* Bericht (HTML) zurück in Fälle lesen – Notfall-Wiederherstellung (ohne Kennzeichen/Originale) */
+function parseReport(html) {
+  const doc = new DOMParser().parseFromString(html, 'text/html'), out = [];
+  doc.querySelectorAll('section.case').forEach((sec) => {
+    const h = sec.querySelector('h3')?.textContent || '', m = h.match(/(\d{2})\.(\d{2})\.(\d{2}),?\s*(\d{2}):(\d{2})/); if (!m) return;
+    const ts = new Date(2000 + +m[3], +m[2] - 1, +m[1], +m[4], +m[5]).toISOString();
+    const kv = {}; sec.querySelectorAll('table.kv tr').forEach((tr) => { const t = tr.children; if (t.length > 1) kv[t[0].textContent.trim()] = t[1]; });
+    const ort = kv['Ort']; if (!ort) return;
+    const cm = (ort.querySelector('.m')?.textContent || '').match(/(-?\d+\.\d+)\s*,\s*(-?\d+\.\d+)/); if (!cm) return;
+    const ortTxt = [...ort.childNodes].filter((n) => n.nodeType === 3).map((n) => n.textContent).join('').trim(), parts = ortTxt.split(','), city = (parts[0] || '').trim(), st = (parts.slice(1).join(',') || '').trim();
+    const hn = st.match(/^(.*?)\s+(\d+\s?[a-zA-Z]?)$/);
+    const fz = (kv['Fahrzeug']?.textContent || '').split(' · ').map((x) => x.trim());
+    const tb = kv['Tatbestand'], tbTxt = tb ? tb.textContent : '', tm = tbTxt.match(/TBNR\s+(\S+)\s*·\s*(\d+)\s*€(?:\s*·\s*(\d+)\s*Pkt)?/);
+    const desc = tb && tb.querySelector('br') ? [...tb.childNodes].slice([...tb.childNodes].findIndex((n) => n.nodeName === 'BR') + 1).map((n) => n.textContent).join('').trim() : '';
+    const tbnr = tm ? tm[1] : '—'; let grp = 'sonst'; for (const g of TATBESTAENDE) if (g.items && g.items.some((e) => e.tbnr === tbnr)) grp = g.id;
+    const um = kv['Umstände']?.textContent || '', rest = um.match(/Restbreite\s+(\d+)\s*cm/), dur = um.match(/Dauer\s*>\s*(\d)/);
+    const imgs = [...sec.querySelectorAll('img')].map((i) => ({ img: i.getAttribute('src'), ts: Date.parse(ts) }));
+    out.push({
+      schema: 2, timestamp: ts, observedUntil: null, durationMin: 0, coords: { lat: +cm[1], lng: +cm[2] }, locSource: 'wiederhergestellt', accuracy: null,
+      address: ortTxt, road: hn ? hn[1] : st, houseNumber: hn ? hn[2] : '', city, licensePlate: '', plateSource: 'manual',
+      vehicleBrand: '', vehicleModel: fz[0] || 'Unbekannt', vehicleType: fz[1] || 'PKW', vehicleColor: fz[2] || '', aiFilled: false,
+      group: grp, tbnr, tbnrDesc: desc, fine: tm ? +tm[2] : 0, points: tm && tm[3] ? +tm[3] : 0, tbVerified: !/nicht verifiziert/.test(tbTxt),
+      flags: { behinderung: /Behinderung|Gefährdung/.test(um), gefaehrdung: /Gefährdung/.test(um), rettung: /Rettungsweg/.test(um), dauer: dur ? +dur[1] : 0 },
+      isSchoolRoute: /Schul-\/Kitaweg/.test(um), rescueRoute: /Rettungsweg/.test(um), restCm: rest ? +rest[1] : null,
+      notes: kv['Notiz']?.textContent.trim() || '', photos: imgs, blurredPhoto: imgs[0]?.img || null
+    });
+  });
+  return out;
 }
 async function importBackup(file) {
   try {
-    const j = JSON.parse(await file.text()); const recs = Array.isArray(j) ? j : j.records; if (!Array.isArray(recs)) throw new Error('Format');
-    let n = 0; for (const r of recs) { if (!r.timestamp || !r.coords) continue; const { id, ...rest } = r; await dbAdd(rest); n++; }
-    toast(`${n} Fälle importiert`); refreshStats();
-  } catch (e) { toast('Backup nicht lesbar'); }
+    const text = await file.text(); let recs, origs = {};
+    if (/\.html?$/i.test(file.name) || /^\s*<!doctype html/i.test(text)) { recs = parseReport(text); if (!recs.length) throw new Error('Bericht'); }
+    else { const j = JSON.parse(text); recs = Array.isArray(j) ? j : j.records; origs = (!Array.isArray(j) && j.originals) || {}; if (!Array.isArray(recs)) throw new Error('Format'); }
+    const have = await dbAll(); let n = 0, dup = 0, no = 0;
+    for (const r of recs) {
+      if (!r.timestamp || !r.coords) continue;
+      if (have.some((h) => h.timestamp === r.timestamp && h.coords && Math.abs(h.coords.lat - r.coords.lat) < 1e-5)) { dup++; continue; }
+      const { id, ...rest } = r; const os = origs[String(id)] || []; rest.hasOrig = os.length > 0;
+      const nid = await dbAdd(rest); n++;
+      for (const o of os) { await origPut({ ...o, key: nid + ':' + o.i }); no++; }
+    }
+    toast(`${n} Fälle importiert${no ? ' (' + no + ' Originale)' : ''}${dup ? ', ' + dup + ' schon vorhanden' : ''}`, 4500); refreshStats();
+  } catch (e) { console.warn(e); toast('Datei nicht lesbar (Backup .json oder Bericht .html)'); }
 }
 
 /* ---------- Tabs / Einstellungen ---------- */
@@ -942,7 +993,7 @@ async function init() {
   $('tabCapture').onclick = () => switchTab('capture'); $('tabStats').onclick = () => switchTab('stats');
   $('btnPrint').onclick = printReport;
   $('btnPeek').onclick = () => { S.peek = !S.peek; renderPhoto(); }; $('btnFull').onclick = openCurrentFull;
-  $('btnCsvAnon').onclick = () => exportCsv(false); $('btnCsvFull').onclick = () => exportCsv(true); $('btnBackup').onclick = exportBackup;
+  $('btnCsvAnon').onclick = () => exportCsv(false); $('btnCsvFull').onclick = () => exportCsv(true); $('btnBackup').onclick = exportBackup; $('btnBackupNow').onclick = exportBackup;
   $('inImport').addEventListener('change', (e) => { if (e.target.files[0]) importBackup(e.target.files[0]); e.target.value = ''; });
   $('repRecords').addEventListener('click', (e) => { const b = e.target.closest('[data-open]'); if (b) openDetail(+b.dataset.open); });
   $('mClose').onclick = () => $('modal').classList.add('hidden');
