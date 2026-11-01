@@ -1,5 +1,5 @@
 /* ParkWatch Quartier v2.0 – Anwendungslogik (offline-first, keine Build-Abhängigkeit zur Laufzeit) */
-const APP_VERSION = "2.5.0";
+const APP_VERSION = "2.5.1";
 'use strict';
 
 const $ = (id) => document.getElementById(id);
@@ -377,7 +377,11 @@ function findPlateRegions(src) {
     if (bh < 9 || bh > 110 || bw < 36 || bw > 520 || ar < 1.8 || ar > 9.5 || area / (bw * bh) < 0.28) continue;
     // Helligkeit des Ausschnitts (Kennzeichen sind überwiegend hell)
     let br = 0, n = 0; for (let y = y0; y <= y1; y += 2) for (let x = x0; x <= x1; x += 2) { br += gray[y * w + x]; n++; }
-    br /= n; const score = (area / (bw * bh)) * (0.4 + br / 255) * Math.min(1, bw / 90);
+    br /= n; let score = (area / (bw * bh)) * (0.4 + br / 255) * Math.min(1, bw / 90);
+    // EU-Streifen (blau, links) ist das sicherste Merkmal eines Kennzeichens -> Kühlergrill/Scheinwerfer ranken dahinter
+    let bl = 0, bn = 0; const xe = Math.min(w, x0 + Math.max(2, Math.round(bw * 0.12)));
+    for (let y = y0; y <= y1; y++) for (let x = x0; x < xe; x++) { const k = (y * w + x) * 4, R = d[k], G = d[k + 1], B = d[k + 2]; bn++; if (B > R + 35 && B > G + 10 && B > 70) bl++; }
+    if (bn && bl / bn > 0.35) score *= 1.8;
     regs.push({ x: x0 / sc, y: y0 / sc, w: bw / sc, h: bh / sc, score });
   }
   return regs.sort((a, b) => b.score - a.score);
@@ -429,9 +433,9 @@ function plateVariants(canvas, r) {
   }
   return vars;
 }
-async function readPlateRegion(canvas, r) {
+async function readPlateRegion(canvas, r, maxV = 9) {
   const w = await getOcr(), votes = new Map();
-  for (const v of plateVariants(canvas, r)) {
+  for (const v of plateVariants(canvas, r).slice(0, maxV)) {
     const { data } = await w.recognize(v); const txt = (data.text || '').trim().replace(/\s+/g, ' '); (S.dbg ||= { regions: 0, reads: [], tiles: 0 }).reads.push(txt);
     const c = plateFromText(txt, data.confidence || 0)[0];
     if (c) { const e = votes.get(c.text) || { n: 0, conf: 0 }; e.n++; e.conf = Math.max(e.conf, data.confidence || 0); votes.set(c.text, e); if (e.n >= 2) break; }
@@ -443,8 +447,11 @@ async function readPlateRegion(canvas, r) {
 async function ocrPlatesIn(canvas, maxRegions = 4) {
   const regs = findPlateRegions(canvas).slice(0, maxRegions), found = [];
   S.dbg = { regions: regs.length, reads: [], tiles: 0 };
-  for (const r of regs) {
-    const res = await readPlateRegion(canvas, r); if (!res) continue;
+  let strong = false;
+  for (let i = 0; i < regs.length; i++) {
+    const r = regs[i]; if (regs.length > 1) setOcrStatus('busy', `Suche Kennzeichen … (${i + 1}/${regs.length})`);
+    const res = await readPlateRegion(canvas, r, strong ? 2 : 9); if (!res) continue;       // nach sicherem Treffer weitere Bereiche nur noch schnell prüfen (weitere Kennzeichen im Hintergrund)
+    if (res.votes >= 2) strong = true;
     if (res.votes < 2 && res.text.replace(/ /g, '').length < 6) continue;   // Einzeltreffer nur bei ausreichend langem Kennzeichen (Fehlalarme)
     found.push({ ...res, box: { x0: r.x, y0: r.y, x1: r.x + r.w, y1: r.y + r.h } });
   }

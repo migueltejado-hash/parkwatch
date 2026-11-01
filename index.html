@@ -2,7 +2,7 @@
 <html lang="de" class="h-full bg-slate-950 text-slate-100">
 <head>
   <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
   <meta name="theme-color" content="#020617">
   <meta name="apple-mobile-web-app-capable" content="yes">
   <meta name="mobile-web-app-capable" content="yes">
@@ -17,11 +17,11 @@
   <link rel="stylesheet" href="vendor/leaflet/leaflet.css">
   <link rel="stylesheet" href="styles.css">
 </head>
-<body class="h-full flex flex-col bg-slate-950 text-slate-100 overflow-hidden">
+<body class="h-full flex flex-col bg-slate-950 text-slate-100 overflow-hidden" style="overflow-x:hidden;touch-action:pan-y">
 
   <!-- HEADER -->
   <header class="flex-shrink-0 bg-slate-900/95 border-b border-slate-800 px-3.5 pb-2 safe-t z-30 no-print">
-    <div class="flex items-center justify-between">
+    <div class="flex items-center justify-between" style="max-width:28rem;margin:0 auto">
       <div class="flex items-center gap-2">
         <div class="w-8 h-8 rounded-xl bg-emerald-500/15 text-emerald-400 flex items-center justify-center border border-emerald-500/30"><i class="fa-solid fa-traffic-light text-sm"></i></div>
         <div>
@@ -281,8 +281,8 @@
 
   <!-- DETAIL-MODAL -->
   <div id="modal" class="hidden fixed inset-0 bg-slate-950/85 z-50 p-3 flex items-center justify-center no-print">
-    <div class="bg-slate-900 border border-slate-800 rounded-2xl max-w-sm w-full p-3 space-y-3 shadow-2xl overflow-y-auto" style="max-height:92vh">
-      <div class="flex items-center justify-between border-b border-slate-800 pb-2">
+    <div class="bg-slate-900 border border-slate-800 rounded-2xl max-w-sm w-full p-3 space-y-3 shadow-2xl overflow-y-auto" style="max-height:92vh;max-height:92dvh;overscroll-behavior:contain">
+      <div class="flex items-center justify-between border-b border-slate-800 pb-2" style="position:sticky;top:-12px;margin:-12px -12px 0;padding:12px 12px 8px;background:#0f172a;z-index:5;border-radius:1rem 1rem 0 0">
         <h3 class="text-sm font-bold"><i class="fa-solid fa-file-invoice text-emerald-400 mr-1"></i>Fall-Details</h3>
         <button id="mClose" class="w-10 h-10 text-slate-300" aria-label="Schließen"><i class="fa-solid fa-xmark text-lg"></i></button>
       </div>
@@ -299,8 +299,8 @@
 
   <!-- EINSTELLUNGEN -->
   <div id="settings" class="hidden fixed inset-0 bg-slate-950/90 z-50 p-3 flex items-center justify-center no-print">
-    <div class="bg-slate-900 border border-slate-800 rounded-2xl max-w-sm w-full p-3 space-y-3 overflow-y-auto" style="max-height:92vh">
-      <div class="flex items-center justify-between border-b border-slate-800 pb-2">
+    <div class="bg-slate-900 border border-slate-800 rounded-2xl max-w-sm w-full p-3 space-y-3 overflow-y-auto" style="max-height:92vh;max-height:92dvh;overscroll-behavior:contain">
+      <div class="flex items-center justify-between border-b border-slate-800 pb-2" style="position:sticky;top:-12px;margin:-12px -12px 0;padding:12px 12px 8px;background:#0f172a;z-index:5;border-radius:1rem 1rem 0 0">
         <h3 class="text-sm font-bold"><i class="fa-solid fa-gear text-emerald-400 mr-1"></i>Einstellungen</h3>
         <button id="sClose" class="w-10 h-10 text-slate-300" aria-label="Schließen"><i class="fa-solid fa-xmark text-lg"></i></button>
       </div>
@@ -354,7 +354,7 @@
         <button id="sWipe" class="btn w-full py-3 text-xs text-rose-300"><i class="fa-solid fa-triangle-exclamation"></i>Alle Fälle löschen</button>
       </div>
       <p class="text-[10px] text-slate-500">ParkWatch Quartier <span id="sVer"></span> · Katalog-Stand <span id="sStand"></span></p>
-      <button id="sSave" class="w-full py-3.5 rounded-2xl font-bold text-sm bg-emerald-600 text-white">Fertig</button>
+      <button id="sSave" class="w-full py-3.5 rounded-2xl font-bold text-sm bg-emerald-600 text-white" style="position:sticky;bottom:-12px">Fertig</button>
     </div>
   </div>
 
