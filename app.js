@@ -1,5 +1,5 @@
 /* ParkWatch Quartier v2.0 – Anwendungslogik (offline-first, keine Build-Abhängigkeit zur Laufzeit) */
-const APP_VERSION = "2.4.0";
+const APP_VERSION = "2.4.1";
 'use strict';
 
 const $ = (id) => document.getElementById(id);
@@ -1136,7 +1136,15 @@ async function init() {
   $('sPersist').onclick = async () => { try { const ok = await navigator.storage.persist(); toast(ok ? 'Speicher ist jetzt geschützt' : 'Vom Browser nicht gewährt (App zum Home-Bildschirm hinzufügen)', 4000); openSettings(); } catch (e) { toast('Nicht unterstützt'); } };
   $('sWipe').onclick = async () => { if (confirm('ALLE gespeicherten Fälle löschen? Das ist nicht rückgängig zu machen.') && confirm('Wirklich alle löschen? (Backup vorhanden?)')) { await dbClear(); toast('Alles gelöscht'); refreshStats(); } };
 
-  if ('serviceWorker' in navigator) navigator.serviceWorker.register('sw.js').catch((e) => console.warn('SW', e));
+  if ('serviceWorker' in navigator) {
+    const hadCtl = !!navigator.serviceWorker.controller; let reloaded = false;
+    navigator.serviceWorker.addEventListener('controllerchange', () => { if (!hadCtl || reloaded) return; reloaded = true; if (!S.dirty) location.reload(); else toast('Neue Version bereit – App einmal schließen und neu öffnen', 6000); });
+    navigator.serviceWorker.register('sw.js', { updateViaCache: 'none' }).then((reg) => { reg.update().catch(() => {}); document.addEventListener('visibilitychange', () => { if (!document.hidden) reg.update().catch(() => {}); }); }).catch((e) => console.warn('SW', e));
+  }
+  $('sUpdate').onclick = async () => {
+    try { const rs = await navigator.serviceWorker.getRegistrations(); for (const r of rs) await r.unregister(); for (const k of await caches.keys()) await caches.delete(k); } catch (e) { /* egal */ }
+    toast('Zwischenspeicher geleert – lade neu …', 2500); setTimeout(() => location.reload(), 800);
+  };
   window.addEventListener('pagehide', () => { collectForm(); });
   setTimeout(cloudFlush, 3000);
 }
