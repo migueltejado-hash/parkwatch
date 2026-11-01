@@ -1,5 +1,5 @@
 /* ParkWatch Quartier v2.0 – Anwendungslogik (offline-first, keine Build-Abhängigkeit zur Laufzeit) */
-const APP_VERSION = "2.3.0";
+const APP_VERSION = "2.4.0";
 'use strict';
 
 const $ = (id) => document.getElementById(id);
@@ -25,7 +25,7 @@ function emptyCase() {
   };
 }
 const S = { dbg: null, ocrErr: null, db: null, cur: emptyCase(), editId: null, savedId: null, dirty: true, records: [], map: null, marker: null, mapBig: false,
-            settings: { aiOn: false, aiKey: '', aiModel: 'claude-sonnet-5-5', aiAuto: false, keepOrig: true }, ocr: null, ocrBusy: 0 };
+            settings: { aiOn: false, aiKey: '', aiModel: 'claude-sonnet-5-5', aiAuto: false, keepOrig: true, supaUrl: '', supaKey: '', supaEmail: '', supaSess: null, supaPlate: false, gClient: '' }, ocr: null, ocrBusy: 0 };
 
 /* ---------- Hilfen ---------- */
 let toastTimer;
@@ -650,8 +650,9 @@ async function save() {
   if (c.photos.some((p) => !p.locked && p.doc && p.boxes.length === 0) && !confirm('Zusatzfotos werden nicht automatisch geprüft. Ist auf keinem davon ein Kennzeichen oder Gesicht erkennbar? (Sonst: Foto antippen und aufs Kennzeichen tippen.)')) return;
   const e = m.entry; const outs = c.photos.map((p) => ({ img: renderFinalPhoto(p), ts: p.ts }));
   const times = c.photos.map((p) => p.ts).sort((a, b) => a - b);
+  c.cloudId = c.cloudId || crypto.randomUUID();
   const rec = {
-    schema: 2, timestamp: new Date(c.ts).toISOString(), observedUntil: times.length ? new Date(times[times.length - 1]).toISOString() : null,
+    cloudId: c.cloudId, schema: 2, timestamp: new Date(c.ts).toISOString(), observedUntil: times.length ? new Date(times[times.length - 1]).toISOString() : null,
     durationMin: c.obsMin || 0, coords: c.coords, locSource: c.locSource, accuracy: c.accuracy,
     address: c.address, road: c.road || (c.address.split(',')[1] || '').trim(), houseNumber: c.houseNumber, city: c.city,
     licensePlate: c.plate, plateSource: c.plateSource,
@@ -670,9 +671,13 @@ async function save() {
       if (ps.some((p) => !p.locked)) { await origDel(rid); for (let i = 0; i < ps.length; i++) { const p = ps[i]; if (p.locked) continue; await origPut({ key: rid + ':' + i, i, img: p.origUrl, boxes: p.boxes, ts: p.ts, doc: !!p.doc }); any = true; } }
       if (any && !rec.hasOrig) { rec.id = rid; rec.hasOrig = true; await dbPut(rec); }
     }
-    S.settings.unbacked = (S.settings.unbacked || 0) + 1; saveSettings(); syncBackupBar(); try { navigator.storage?.persist?.(); } catch (e) { /* egal */ }
+    try { navigator.storage?.persist?.(); } catch (e) { /* egal */ }
+    const synced = await withTimeout(cloudSync(rec), 12000);
+    if (!synced) { if (cloudReady()) pendSet('pw_pend_sync', [...pendList('pw_pend_sync'), S.editId || S.savedId]); S.settings.unbacked = (S.settings.unbacked || 0) + 1; saveSettings(); }
+    if (synced) { S.settings.lastBackup = new Date().toISOString(); saveSettings(); }
+    syncBackupBar(); cloudStatus(); if (synced) toast('Gespeichert · Cloud gesichert');
     await draftDel(); $('draftBadge').classList.add('hidden'); S.peek = false;
-    S.dirty = false; setSaveButton(); toast('Gespeichert'); refreshStats();
+    S.dirty = false; setSaveButton(); if (!synced) toast('Gespeichert'); refreshStats();
   } catch (err) { console.error(err); toast('Speichern fehlgeschlagen: ' + (err && err.name === 'QuotaExceededError' ? 'Speicher voll' : 'Datenbankfehler'), 4500); }
 }
 function newCase(silent) {
@@ -703,7 +708,7 @@ function bar(label, count, total, extra = '') {
 }
 async function refreshStats() {
   const rs = (S.records = (await dbAll()).sort((a, b) => a.timestamp.localeCompare(b.timestamp))); const n = rs.length;
-  if (n && !S.settings.lastBackup && !S.settings.unbacked) { S.settings.unbacked = n; saveSettings(); }
+  if (n && !cloudReady() && !S.settings.lastBackup && !S.settings.unbacked) { S.settings.unbacked = n; saveSettings(); }
   syncBackupBar(n);
   $('countBadge').textContent = n;
   const empty = '<div class="text-slate-500 italic text-xs py-1">Keine Daten.</div>';
@@ -750,7 +755,7 @@ function openDetail(id) {
     row('Ort', esc(r.address)) + row('Zeit', fmtDT(Date.parse(r.timestamp)) + (r.durationMin ? ` (+${r.durationMin} min)` : '')) + row('Standort-Quelle', esc(r.locSource || '—')) +
     (r.restCm != null ? row('Restbreite', r.restCm + ' cm') : '') + (r.notes ? `<p class="pt-1 border-t border-slate-800 text-[11px] text-slate-300">${esc(r.notes)}</p>` : '');
   $('mMaps').href = `https://www.google.com/maps?q=${r.coords.lat},${r.coords.lng}`;
-  $('mDel').onclick = async () => { if (!confirm('Fall endgültig löschen?')) return; await dbDel(id); await origDel(id).catch(() => {}); $('modal').classList.add('hidden'); toast('Gelöscht'); refreshStats(); };
+  $('mDel').onclick = async () => { if (!confirm('Fall endgültig löschen?')) return; await dbDel(id); await origDel(id).catch(() => {}); if (cloudReady() && r.cloudId && !(await withTimeout(cloudDelete(r.cloudId), 8000))) pendSet('pw_pend_del', [...pendList('pw_pend_del'), r.cloudId]); $('modal').classList.add('hidden'); toast('Gelöscht'); refreshStats(); };
   $('mEdit').onclick = () => editRecord(r);
   $('modal').classList.remove('hidden');
 }
@@ -760,7 +765,7 @@ async function editRecord(r) {
   c.ts = Date.parse(r.timestamp); c.coords = r.coords; c.locSource = r.locSource; c.accuracy = r.accuracy; c.address = r.address; c.road = r.road; c.houseNumber = r.houseNumber; c.city = r.city;
   c.plate = r.licensePlate || ''; c.plateSource = r.plateSource || 'manual'; c.brand = r.vehicleBrand || ''; c.model = (r.vehicleModel || '').replace(r.vehicleBrand || '', '').trim(); c.vtype = r.vehicleType || 'PKW'; c.color = r.vehicleColor || '';
   c.group = r.group || 'gehweg'; c.beh = !!r.flags?.behinderung && !r.flags?.gefaehrdung; c.gef = !!r.flags?.gefaehrdung; c.extra = !!r.flags?.rettung; c.dur = r.flags?.dauer || 0; c.durManual = true;
-  c.school = !!r.isSchoolRoute; c.rescue = !!r.rescueRoute; c.restCm = r.restCm ?? ''; c.notes = r.notes || '';
+  c.cloudId = r.cloudId || ''; c.school = !!r.isSchoolRoute; c.rescue = !!r.rescueRoute; c.restCm = r.restCm ?? ''; c.notes = r.notes || '';
   if (c.group === 'sonst') c.custom = { tbnr: r.tbnr, text: r.tbnrDesc, euro: String(r.fine), pts: String(r.points || '') };
   const os = r.hasOrig ? await origGet(r.id).catch(() => []) : [];
   if (os.length) for (const o of os) { const cv = await canvasFromUrl(o.img); c.photos.push({ orig: cv, origUrl: o.img, boxes: o.boxes || [], ts: o.ts, out: null, locked: false, doc: !!o.doc }); }
@@ -834,13 +839,17 @@ async function exportCsv(withPlate) {
   const csv = '﻿' + [head, ...rows].map((r) => r.map(csvCell).join(';')).join('\r\n');
   await shareOrDownload(`ParkWatch_${withPlate ? 'mitKz' : 'anonym'}_${new Date().toISOString().slice(0, 10)}.csv`, new Blob([csv], { type: 'text/csv;charset=utf-8' }));
 }
-async function exportBackup() {
-  if (!S.records.length) return toast('Keine Daten vorhanden');
+async function buildBackupBlob() {
   const parts = ['{"app":"ParkWatch","version":3,"exported":' + JSON.stringify(new Date().toISOString()) + ',"records":' + JSON.stringify(S.records) + ',"originals":{'];
   let first = true, nOrig = 0;
   for (const r of S.records) { if (!r.hasOrig) continue; const os = await origGet(r.id).catch(() => []); if (!os.length) continue; parts.push((first ? '' : ',') + JSON.stringify(String(r.id)) + ':' + JSON.stringify(os)); first = false; nOrig += os.length; }
   parts.push('}}');
-  const ok = await shareOrDownload(`ParkWatch_Backup_${new Date().toISOString().slice(0, 10)}.json`, new Blob(parts, { type: 'application/json' }));
+  return { blob: new Blob(parts, { type: 'application/json' }), nOrig };
+}
+async function exportBackup() {
+  if (!S.records.length) return toast('Keine Daten vorhanden');
+  const { blob, nOrig } = await buildBackupBlob();
+  const ok = await shareOrDownload(`ParkWatch_Backup_${new Date().toISOString().slice(0, 10)}.json`, blob);
   if (ok) { S.settings.unbacked = 0; S.settings.lastBackup = new Date().toISOString(); saveSettings(); syncBackupBar(); toast(`Backup erstellt (${S.records.length} Fälle${nOrig ? ', ' + nOrig + ' Originale' : ''}) – in „Dateien“/iCloud sichern`, 4500); }
 }
 function syncBackupBar(n = S.records.length) {
@@ -894,6 +903,122 @@ async function importBackup(file) {
   } catch (e) { console.warn(e); toast('Datei nicht lesbar (Backup .json oder Bericht .html)'); }
 }
 
+/* ---------- Externe Sicherung: Supabase (automatisch) + Google Drive (Export) ---------- */
+const PLATE_RE = /\b[A-ZÄÖÜ]{1,3}[ -]?[A-Z]{1,2}[ -]?\d{1,4}[EH]?\b/g;
+const sbBase = () => (S.settings.supaUrl || '').trim().replace(/\/+$/, '');
+const cloudReady = () => !!(sbBase() && S.settings.supaKey && S.settings.supaSess);
+function sbSetSession(j) { S.settings.supaSess = { access: j.access_token, refresh: j.refresh_token || S.settings.supaSess?.refresh, exp: Date.now() + (j.expires_in || 3600) * 1000, uid: (j.user && j.user.id) || S.settings.supaSess?.uid, email: (j.user && j.user.email) || S.settings.supaSess?.email }; saveSettings(); }
+async function sbToken() {
+  const se = S.settings.supaSess; if (!se) return null;
+  if (Date.now() < se.exp - 60000) return se.access;
+  const r = await fetch(sbBase() + '/auth/v1/token?grant_type=refresh_token', { method: 'POST', headers: { apikey: S.settings.supaKey, 'content-type': 'application/json' }, body: JSON.stringify({ refresh_token: se.refresh }) });
+  if (!r.ok) { if (r.status === 400 || r.status === 401) { S.settings.supaSess = null; saveSettings(); } return null; }
+  sbSetSession(await r.json()); return S.settings.supaSess.access;
+}
+async function sbSendCode(email) {
+  const r = await fetch(sbBase() + '/auth/v1/otp', { method: 'POST', headers: { apikey: S.settings.supaKey, 'content-type': 'application/json' }, body: JSON.stringify({ email, create_user: true }) });
+  if (!r.ok) throw new Error('HTTP ' + r.status + ' ' + ((await r.text()).slice(0, 120)));
+}
+async function sbVerify(email, code) {
+  const r = await fetch(sbBase() + '/auth/v1/verify', { method: 'POST', headers: { apikey: S.settings.supaKey, 'content-type': 'application/json' }, body: JSON.stringify({ type: 'email', email, token: code }) });
+  if (!r.ok) throw new Error('Code ungültig oder abgelaufen (' + r.status + ')');
+  sbSetSession(await r.json());
+}
+const pendList = (k) => { try { return JSON.parse(localStorage.getItem(k) || '[]'); } catch (e) { return []; } };
+const pendSet = (k, v) => { try { localStorage.setItem(k, JSON.stringify([...new Set(v)])); } catch (e) { /* egal */ } };
+async function cloudSync(rec) {
+  if (!cloudReady() || !rec.cloudId) return false;
+  try {
+    const tok = await sbToken(); if (!tok) return false; const uid = S.settings.supaSess.uid, H = { apikey: S.settings.supaKey, Authorization: 'Bearer ' + tok };
+    const paths = [];
+    for (let i = 0; i < (rec.photos || []).length; i++) {
+      const ph = rec.photos[i], blob = await (await fetch(ph.img)).blob(), path = `${uid}/${rec.cloudId}/${i}.jpg`;
+      const r = await fetch(`${sbBase()}/storage/v1/object/photos/${path}`, { method: 'POST', headers: { ...H, 'x-upsert': 'true', 'content-type': 'image/jpeg' }, body: blob });
+      if (!r.ok) throw new Error('Storage ' + r.status);
+      paths.push({ path, ts: ph.ts });
+    }
+    const { id, photos, blurredPhoto, hasOrig, ...rest } = rec, data = { ...rest, photoPaths: paths };
+    if (!S.settings.supaPlate) { data.licensePlate = ''; data.notes = (rec.notes || '').replace(PLATE_RE, '[Kz]'); }
+    const r = await fetch(sbBase() + '/rest/v1/incidents?on_conflict=user_id,cid', { method: 'POST', headers: { ...H, 'content-type': 'application/json', Prefer: 'resolution=merge-duplicates,return=minimal' }, body: JSON.stringify({ cid: rec.cloudId, data, updated_at: new Date().toISOString() }) });
+    if (!r.ok) throw new Error('DB ' + r.status);
+    return true;
+  } catch (e) { console.warn('Cloud', e); return false; }
+}
+async function cloudDelete(cid) {
+  if (!cloudReady() || !cid) return false;
+  try {
+    const tok = await sbToken(); if (!tok) return false; const H = { apikey: S.settings.supaKey, Authorization: 'Bearer ' + tok }, uid = S.settings.supaSess.uid;
+    const r = await fetch(`${sbBase()}/rest/v1/incidents?cid=eq.${encodeURIComponent(cid)}`, { method: 'DELETE', headers: H }); if (!r.ok) throw new Error('DB ' + r.status);
+    await fetch(sbBase() + '/storage/v1/object/photos', { method: 'DELETE', headers: { ...H, 'content-type': 'application/json' }, body: JSON.stringify({ prefixes: [0, 1, 2, 3, 4, 5].map((i) => `${uid}/${cid}/${i}.jpg`) }) }).catch(() => {});
+    return true;
+  } catch (e) { console.warn('Cloud', e); return false; }
+}
+const withTimeout = (p, ms) => Promise.race([p, new Promise((res) => setTimeout(() => res(false), ms))]);
+async function cloudFlush() {
+  if (!cloudReady() || !navigator.onLine) return;
+  const ids = pendList('pw_pend_sync'), left = [];
+  for (const id of ids) { const rec = (await dbAll()).find((r) => r.id === id); if (rec && !(await cloudSync(rec))) left.push(id); }
+  pendSet('pw_pend_sync', left);
+  const dels = pendList('pw_pend_del'), dl = [];
+  for (const cid of dels) if (!(await cloudDelete(cid))) dl.push(cid);
+  pendSet('pw_pend_del', dl);
+  cloudStatus();
+}
+async function cloudSyncAll() {
+  if (!cloudReady()) return toast('Erst in den Einstellungen anmelden');
+  const rs = await dbAll(); let ok = 0, fail = 0;
+  for (const r of rs) { if (!r.cloudId) { r.cloudId = crypto.randomUUID(); await dbPut(r); } (await cloudSync(r)) ? ok++ : fail++; }
+  if (!fail) { S.settings.unbacked = 0; S.settings.lastBackup = new Date().toISOString(); saveSettings(); syncBackupBar(); }
+  toast(`Cloud: ${ok} Fälle gesichert${fail ? ', ' + fail + ' fehlgeschlagen' : ''}`, 4000); cloudStatus();
+}
+async function cloudRestore() {
+  if (!cloudReady()) return toast('Erst in den Einstellungen anmelden');
+  try {
+    const tok = await sbToken(); if (!tok) throw new Error('Anmeldung abgelaufen'); const H = { apikey: S.settings.supaKey, Authorization: 'Bearer ' + tok };
+    const r = await fetch(sbBase() + '/rest/v1/incidents?select=cid,data', { headers: H }); if (!r.ok) throw new Error('DB ' + r.status);
+    const rows = await r.json(), have = await dbAll(); let n = 0;
+    for (const row of rows) {
+      if (have.some((h) => h.cloudId === row.cid)) continue;
+      const d = row.data, photos = [];
+      for (const pp of d.photoPaths || []) { const pr = await fetch(`${sbBase()}/storage/v1/object/authenticated/photos/${pp.path}`, { headers: H }); if (!pr.ok) continue; const b = await pr.blob(); photos.push({ img: await new Promise((res) => { const fr = new FileReader(); fr.onload = () => res(fr.result); fr.readAsDataURL(b); }), ts: pp.ts }); }
+      const { photoPaths, ...rest } = d; await dbAdd({ ...rest, cloudId: row.cid, photos, blurredPhoto: photos[0]?.img || null }); n++;
+    }
+    toast(`${n} Fälle aus der Cloud wiederhergestellt (${rows.length} in der Cloud)`, 4500); refreshStats();
+  } catch (e) { toast('Wiederherstellung fehlgeschlagen: ' + e.message, 5000); }
+}
+function cloudStatus() {
+  const se = S.settings.supaSess, el = $('sSbState'); if (!el) return;
+  const pend = pendList('pw_pend_sync').length + pendList('pw_pend_del').length;
+  el.textContent = se ? `Angemeldet: ${se.email || 'ja'}${pend ? ' · ' + pend + ' warten auf Upload' : ' · alles synchron'}` : 'Nicht angemeldet';
+}
+/* Google Drive: Backup-Datei in Ordner „ParkWatch“ (App sieht nur selbst angelegte Dateien: Scope drive.file) */
+function loadGis() { return new Promise((res, rej) => { if (window.google && google.accounts && google.accounts.oauth2) return res(); const s = document.createElement('script'); s.src = 'https://accounts.google.com/gsi/client'; s.onload = res; s.onerror = () => rej(new Error('Google nicht erreichbar (offline?)')); document.head.appendChild(s); }); }
+async function gToken() {
+  await loadGis();
+  return new Promise((res, rej) => {
+    const tc = google.accounts.oauth2.initTokenClient({ client_id: S.settings.gClient, scope: 'https://www.googleapis.com/auth/drive.file', callback: (r) => (r.error ? rej(new Error(r.error)) : res(r.access_token)), error_callback: (e) => rej(new Error((e && e.type) || 'abgebrochen')) });
+    tc.requestAccessToken({ prompt: '' });
+  });
+}
+async function driveBackup() {
+  if (!S.records.length) return toast('Keine Daten vorhanden');
+  if (!S.settings.gClient) return toast('Erst die Google-Client-ID in den Einstellungen eintragen', 4000);
+  try {
+    toast('Google-Anmeldung …'); const tok = await gToken(), H = { Authorization: 'Bearer ' + tok }, api = 'https://www.googleapis.com/drive/v3/files', q = (x) => api + '?q=' + encodeURIComponent(x) + '&fields=files(id,name)';
+    let r = await fetch(q("name='ParkWatch' and mimeType='application/vnd.google-apps.folder' and trashed=false"), { headers: H }); if (!r.ok) throw new Error('Drive ' + r.status);
+    let folder = (await r.json()).files[0];
+    if (!folder) { r = await fetch(api, { method: 'POST', headers: { ...H, 'content-type': 'application/json' }, body: JSON.stringify({ name: 'ParkWatch', mimeType: 'application/vnd.google-apps.folder' }) }); if (!r.ok) throw new Error('Ordner ' + r.status); folder = await r.json(); }
+    const { blob, nOrig } = await buildBackupBlob(), name = `ParkWatch_Backup_${new Date().toISOString().slice(0, 10)}.json`;
+    r = await fetch(q(`name='${name}' and '${folder.id}' in parents and trashed=false`), { headers: H }); const ex = (await r.json()).files?.[0];
+    const bnd = 'pw' + Date.now(), meta = JSON.stringify(ex ? { name } : { name, parents: [folder.id] });
+    const body = new Blob([`--${bnd}\r\ncontent-type: application/json\r\n\r\n${meta}\r\n--${bnd}\r\ncontent-type: application/json\r\n\r\n`, blob, `\r\n--${bnd}--`]);
+    r = await fetch(`https://www.googleapis.com/upload/drive/v3/files${ex ? '/' + ex.id : ''}?uploadType=multipart`, { method: ex ? 'PATCH' : 'POST', headers: { ...H, 'content-type': 'multipart/related; boundary=' + bnd }, body });
+    if (!r.ok) throw new Error('Upload ' + r.status);
+    S.settings.unbacked = 0; S.settings.lastBackup = new Date().toISOString(); saveSettings(); syncBackupBar();
+    toast(`In Google Drive gesichert: ParkWatch/${name} (${S.records.length} Fälle${nOrig ? ', ' + nOrig + ' Originale' : ''})`, 5000);
+  } catch (e) { console.warn(e); toast('Drive-Sicherung fehlgeschlagen: ' + e.message, 5000); }
+}
+
 /* ---------- Tabs / Einstellungen ---------- */
 function switchTab(t) {
   const cap = t === 'capture';
@@ -905,10 +1030,11 @@ function switchTab(t) {
 function loadSettings() { try { Object.assign(S.settings, JSON.parse(localStorage.getItem('pw_settings') || '{}')); } catch (e) {} }
 function saveSettings() { try { localStorage.setItem('pw_settings', JSON.stringify(S.settings)); } catch (e) {} }
 async function openSettings() {
-  $('sAiOn').checked = S.settings.aiOn; $('sAiKey').value = S.settings.aiKey; $('sAiModel').value = S.settings.aiModel; $('sAiAuto').checked = S.settings.aiAuto; $('sKeepOrig').checked = S.settings.keepOrig !== false; $('sStand').textContent = CATALOG_STAND; $('sVer').textContent = 'v' + APP_VERSION;
+  $('sAiOn').checked = S.settings.aiOn; $('sAiKey').value = S.settings.aiKey; $('sAiModel').value = S.settings.aiModel; $('sAiAuto').checked = S.settings.aiAuto; $('sKeepOrig').checked = S.settings.keepOrig !== false; $('sSbUrl').value = S.settings.supaUrl || ''; $('sSbKey').value = S.settings.supaKey || ''; $('sSbMail').value = S.settings.supaEmail || ''; $('sSbPlate').checked = !!S.settings.supaPlate; $('sGClient').value = S.settings.gClient || ''; cloudStatus(); $('sStand').textContent = CATALOG_STAND; $('sVer').textContent = 'v' + APP_VERSION;
   try { const e = await navigator.storage.estimate(); const p = navigator.storage.persisted ? await navigator.storage.persisted() : false; $('sStorage').textContent = `Belegt: ${(e.usage / 1048576).toFixed(1)} MB von ca. ${(e.quota / 1048576).toFixed(0)} MB · Dauerhaft geschützt: ${p ? 'ja' : 'nein'}`; } catch (e) { $('sStorage').textContent = 'Speicherinfo nicht verfügbar'; }
   $('settings').classList.remove('hidden');
 }
+function collectCloudFields() { S.settings.supaUrl = $('sSbUrl').value.trim(); S.settings.supaKey = $('sSbKey').value.trim(); S.settings.supaEmail = $('sSbMail').value.trim(); S.settings.supaPlate = $('sSbPlate').checked; S.settings.gClient = $('sGClient').value.trim(); saveSettings(); }
 function applyAiVisibility() { $('btnAI').classList.toggle('hidden', !(S.settings.aiOn && S.settings.aiKey)); }
 
 
@@ -934,7 +1060,7 @@ async function init() {
   loadSettings(); ensureBrandList(); applyAiVisibility();
   try { S.db = await openDB(); } catch (e) { toast('Datenbank nicht verfügbar (privater Modus?)', 6000); }
   initMap(); renderAll();
-  window.addEventListener('online', () => ($('netState').textContent = 'Online · Daten bleiben auf diesem Gerät'));
+  window.addEventListener('online', () => { $('netState').textContent = 'Online · Daten bleiben auf diesem Gerät'; cloudFlush(); });
   window.addEventListener('offline', () => ($('netState').textContent = 'Offline · alles wird lokal gespeichert'));
   if (!navigator.onLine) $('netState').textContent = 'Offline · alles wird lokal gespeichert';
 
@@ -999,14 +1125,19 @@ async function init() {
   $('mClose').onclick = () => $('modal').classList.add('hidden');
   $('btnSettings').onclick = openSettings;
   $('sClose').onclick = $('sSave').onclick = () => {
-    S.settings.aiOn = $('sAiOn').checked; S.settings.aiKey = $('sAiKey').value.trim(); S.settings.aiModel = $('sAiModel').value.trim() || 'claude-sonnet-5-5'; S.settings.aiAuto = $('sAiAuto').checked; S.settings.keepOrig = $('sKeepOrig').checked;
+    S.settings.aiOn = $('sAiOn').checked; S.settings.aiKey = $('sAiKey').value.trim(); S.settings.aiModel = $('sAiModel').value.trim() || 'claude-sonnet-5-5'; S.settings.aiAuto = $('sAiAuto').checked; S.settings.keepOrig = $('sKeepOrig').checked; collectCloudFields();
     saveSettings(); applyAiVisibility(); $('settings').classList.add('hidden');
   };
   $('sOcrTest').onclick = ocrSelfTest;
+  $('sSbSend').onclick = async () => { collectCloudFields(); try { if (!sbBase() || !S.settings.supaKey || !S.settings.supaEmail) return toast('URL, Key und E-Mail eintragen'); await sbSendCode(S.settings.supaEmail); toast('Code per E-Mail gesendet', 4000); } catch (e) { toast('Senden fehlgeschlagen: ' + e.message, 5000); } };
+  $('sSbVerify').onclick = async () => { collectCloudFields(); try { await sbVerify(S.settings.supaEmail, $('sSbCode').value.trim()); $('sSbCode').value = ''; cloudStatus(); toast('Angemeldet – jetzt „Alles in Cloud sichern“', 4000); } catch (e) { toast(e.message, 5000); } };
+  $('sSbOut').onclick = () => { S.settings.supaSess = null; saveSettings(); cloudStatus(); toast('Abgemeldet'); };
+  $('sSbAll').onclick = cloudSyncAll; $('sSbRestore').onclick = cloudRestore; $('sGDrive').onclick = () => { collectCloudFields(); driveBackup(); };
   $('sPersist').onclick = async () => { try { const ok = await navigator.storage.persist(); toast(ok ? 'Speicher ist jetzt geschützt' : 'Vom Browser nicht gewährt (App zum Home-Bildschirm hinzufügen)', 4000); openSettings(); } catch (e) { toast('Nicht unterstützt'); } };
   $('sWipe').onclick = async () => { if (confirm('ALLE gespeicherten Fälle löschen? Das ist nicht rückgängig zu machen.') && confirm('Wirklich alle löschen? (Backup vorhanden?)')) { await dbClear(); toast('Alles gelöscht'); refreshStats(); } };
 
   if ('serviceWorker' in navigator) navigator.serviceWorker.register('sw.js').catch((e) => console.warn('SW', e));
   window.addEventListener('pagehide', () => { collectForm(); });
+  setTimeout(cloudFlush, 3000);
 }
 window.addEventListener('DOMContentLoaded', init);
