@@ -1,5 +1,5 @@
 /* ParkWatch Quartier v2.0 – Anwendungslogik (offline-first, keine Build-Abhängigkeit zur Laufzeit) */
-const APP_VERSION = "2.9.0";
+const APP_VERSION = "2.9.1";
 'use strict';
 
 const $ = (id) => document.getElementById(id);
@@ -1225,7 +1225,7 @@ async function sbSendCode(email) {
 }
 async function sbVerify(email, code) {
   const r = await fetch(sbBase() + '/auth/v1/verify', { method: 'POST', headers: { apikey: S.settings.supaKey, 'content-type': 'application/json' }, body: JSON.stringify({ type: 'email', email, token: code }) });
-  if (!r.ok) throw new Error('Code ungültig oder abgelaufen (' + r.status + ')');
+  if (!r.ok) throw new Error('Code ungültig oder abgelaufen (' + r.status + ') – nur den neuesten Code verwenden, Ziffern ohne Leerzeichen');
   sbSetSession(await r.json());
 }
 const pendList = (k) => { try { return JSON.parse(localStorage.getItem(k) || '[]'); } catch (e) { return []; } };
@@ -1452,7 +1452,7 @@ async function init() {
   };
   $('sOcrTest').onclick = ocrSelfTest;
   $('sSbSend').onclick = async () => { collectCloudFields(); try { if (!sbBase() || !S.settings.supaKey || !S.settings.supaEmail) return toast('URL, Key und E-Mail eintragen'); await sbSendCode(S.settings.supaEmail); toast('Code per E-Mail gesendet', 4000); } catch (e) { toast('Senden fehlgeschlagen: ' + e.message, 5000); } };
-  $('sSbVerify').onclick = async () => { collectCloudFields(); try { await sbVerify(S.settings.supaEmail, $('sSbCode').value.trim()); $('sSbCode').value = ''; cloudStatus(); toast('Angemeldet – jetzt „Alles in Cloud sichern“', 4000); } catch (e) { toast(e.message, 5000); } };
+  $('sSbVerify').onclick = async () => { collectCloudFields(); try { await sbVerify(S.settings.supaEmail, $('sSbCode').value.replace(/\D/g, '')); $('sSbCode').value = ''; cloudStatus(); toast('Angemeldet – jetzt „Alles in Cloud sichern“', 4000); } catch (e) { toast(e.message, 5000); } };
   $('sSbOut').onclick = () => { S.settings.supaSess = null; saveSettings(); cloudStatus(); toast('Abgemeldet'); };
   $('sSbAll').onclick = cloudSyncAll; $('sSbRestore').onclick = cloudRestore; $('sGDrive').onclick = () => { collectCloudFields(); driveBackup(); };
   $('sPersist').onclick = async () => { try { const ok = await navigator.storage.persist(); toast(ok ? 'Speicher ist jetzt geschützt' : 'Vom Browser nicht gewährt (App zum Home-Bildschirm hinzufügen)', 4000); openSettings(); } catch (e) { toast('Nicht unterstützt'); } };
