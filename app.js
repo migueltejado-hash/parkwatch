@@ -1,5 +1,5 @@
 /* ParkWatch Quartier v2.0 – Anwendungslogik (offline-first, keine Build-Abhängigkeit zur Laufzeit) */
-const APP_VERSION = "2.9.1";
+const APP_VERSION = "2.10.0";
 'use strict';
 
 const $ = (id) => document.getElementById(id);
@@ -842,13 +842,17 @@ function dashInsights(rs) {
 function dBar(label, v, max, total, col, attrs = '', extra = '') {
   return `<${attrs ? 'button' : 'div'} class="d-bar" ${attrs}><div class="l"><span>${esc(label)}</span><em>${extra}${v} · ${pct(v, total)} %</em></div><div class="d-trk"><i style="width:${Math.max(3, v / max * 100)}%;${col ? '--c:' + col : ''}"></i></div></${attrs ? 'button' : 'div'}>`;
 }
-function dTrend(rs) {
+function trendData(rs) {
   const ts = rs.map((r) => Date.parse(r.timestamp)), t0 = Math.min(...ts), t1 = Math.max(...ts), span = (t1 - t0) / DAY;
   const unit = span <= 2 ? 'h' : span <= 45 ? 'd' : 'w', step = unit === 'h' ? 36e5 : unit === 'd' ? DAY : 7 * DAY;
   const start = unit === 'h' ? new Date(t0).setMinutes(0, 0, 0) : unit === 'd' ? new Date(t0).setHours(0, 0, 0, 0) : (() => { const d = new Date(t0); d.setHours(0, 0, 0, 0); d.setDate(d.getDate() - ((d.getDay() + 6) % 7)); return +d; })();
   const nb = Math.min(60, Math.floor((t1 - start) / step) + 1), b = Array(nb).fill(0); ts.forEach((t) => { b[Math.min(nb - 1, Math.floor((t - start) / step))]++; });
-  const mx = Math.max(...b), W = 320, Hh = 96, pad = 16, bw = (W - 2) / nb, gap = Math.min(3, bw * 0.2);
   const lab = (i) => { const d = new Date(start + i * step); return unit === 'h' ? d.getHours() + ' Uhr' : d.toLocaleDateString('de-DE', { day: '2-digit', month: '2-digit' }); };
+  return { b, nb, lab, unit, mx: Math.max(...b) };
+}
+function dTrend(rs) {
+  const { b, nb, lab, unit } = trendData(rs);
+  const mx = Math.max(...b), W = 320, Hh = 96, pad = 16, bw = (W - 2) / nb, gap = Math.min(3, bw * 0.2);
   const bars = b.map((v, i) => { const h = v ? Math.max(3, v / mx * (Hh - pad - 14)) : 0, x = 1 + i * bw; return `<rect x="${x + gap / 2}" y="${Hh - pad - h}" width="${Math.max(2, bw - gap)}" height="${h}" rx="2" fill="#10b981"/>${v && nb <= 24 ? `<text x="${x + bw / 2}" y="${Hh - pad - h - 3}" font-size="8" fill="#94a3b8" text-anchor="middle">${v}</text>` : ''}`; }).join('');
   const lbl = nb > 1 ? `<text x="2" y="${Hh - 3}" font-size="9" fill="#64748b">${lab(0)}</text><text x="${W - 2}" y="${Hh - 3}" font-size="9" fill="#64748b" text-anchor="end">${lab(nb - 1)}</text>` : `<text x="${W / 2}" y="${Hh - 3}" font-size="9" fill="#64748b" text-anchor="middle">${lab(0)}</text>`;
   return { svg: `<svg viewBox="0 0 ${W} ${Hh}" width="100%" role="img" aria-label="Fälle im Zeitverlauf"><line x1="0" x2="${W}" y1="${Hh - pad}" y2="${Hh - pad}" stroke="#334155"/>${bars}${lbl}</svg>`, unit: { h: 'pro Stunde', d: 'pro Tag', w: 'pro Woche' }[unit] };
@@ -1076,6 +1080,122 @@ async function buildReportPdf(rs, order = 'old') {
   need(14); y += 2; para('Hinweis: Die App ist eine private Dokumentationshilfe. Tatbestände und Beträge sind Orientierungswerte; die Bewertung obliegt den zuständigen Behörden.', M, CW, 8, false, 100);
   const pages = doc.getNumberOfPages(); for (let p = 1; p <= pages; p++) { doc.setPage(p); doc.setFontSize(8); doc.setTextColor(120); doc.text(`ParkWatch Quartier · Seite ${p}/${pages}`, W / 2, H - 8, { align: 'center' }); }
   return doc.output('blob');
+}
+/* ---------- Auswertungs-Bericht (Dashboard als PDF) ---------- */
+function mapClusters(rs) {
+  const cl = [], dist = (a, b) => Math.hypot((a.lat - b.lat) * 111320, (a.lng - b.lng) * 111320 * Math.cos(a.lat * Math.PI / 180));
+  rs.filter((r) => r.coords).forEach((r) => {
+    const sev = !!(r.flags?.behinderung || r.flags?.gefaehrdung || r.isSchoolRoute || r.rescueRoute || r.flags?.rettung);
+    let c = cl.find((x) => dist({ lat: x.sl / x.n, lng: x.sg / x.n }, r.coords) <= 20);
+    if (!c) cl.push(c = { sl: 0, sg: 0, n: 0, sev: 0, road: roadOf(r) });
+    c.sl += r.coords.lat; c.sg += r.coords.lng; c.n++; c.sev += sev ? 1 : 0;
+  });
+  return cl.map((c) => ({ lat: c.sl / c.n, lng: c.sg / c.n, n: c.n, sev: c.sev, road: c.road }));
+}
+/* Statische Karte: OSM-Kacheln auf Canvas zusammensetzen + nummerierte Markierungen (ohne Kacheln: heller Hintergrund) */
+async function staticMapImage(cl, W = 1000, H = 520) {
+  const proj = (lat, lng, z) => { const s = 256 * 2 ** z, sn = Math.sin(lat * Math.PI / 180); return [(lng + 180) / 360 * s, (0.5 - Math.log((1 + sn) / (1 - sn)) / (4 * Math.PI)) * s]; };
+  const ext = (z) => { const ps = cl.map((c) => proj(c.lat, c.lng, z)), xs = ps.map((p) => p[0]), ys = ps.map((p) => p[1]); return { x0: Math.min(...xs), x1: Math.max(...xs), y0: Math.min(...ys), y1: Math.max(...ys) }; };
+  let z = 18; for (; z > 9; z--) { const e = ext(z); if (e.x1 - e.x0 <= W - 200 && e.y1 - e.y0 <= H - 200) break; }
+  const e = ext(z), ox = (e.x0 + e.x1) / 2 - W / 2, oy = (e.y0 + e.y1) / 2 - H / 2;
+  const cv = document.createElement('canvas'); cv.width = W; cv.height = H; const g = cv.getContext('2d'); g.fillStyle = '#e5e7eb'; g.fillRect(0, 0, W, H);
+  const jobs = []; for (let tx = Math.floor(ox / 256); tx <= Math.floor((ox + W) / 256); tx++) for (let ty = Math.floor(oy / 256); ty <= Math.floor((oy + H) / 256); ty++) jobs.push([tx, ty]);
+  let ok = 0;
+  await Promise.all(jobs.map(([tx, ty]) => new Promise((res) => {
+    const im = new Image(), to = setTimeout(() => res(), 7000); im.crossOrigin = 'anonymous';
+    im.onload = () => { clearTimeout(to); try { g.drawImage(im, tx * 256 - ox, ty * 256 - oy); ok++; } catch (er) { /* */ } res(); }; im.onerror = () => { clearTimeout(to); res(); };
+    im.src = `https://tile.openstreetmap.org/${z}/${((tx % 2 ** z) + 2 ** z) % 2 ** z}/${ty}.png`;
+  })));
+  cl.slice().sort((a, b) => a.n - b.n).forEach((c) => {
+    const [px, py] = proj(c.lat, c.lng, z), x = px - ox, y = py - oy, r = 20 + 8 * Math.sqrt(c.n);
+    g.beginPath(); g.arc(x, y, r, 0, 7); g.fillStyle = c.sev ? '#e11d48' : '#059669'; g.fill(); g.lineWidth = 5; g.strokeStyle = '#fff'; g.stroke();
+    g.fillStyle = '#fff'; g.font = `800 ${Math.round(r * 0.95)}px sans-serif`; g.textAlign = 'center'; g.textBaseline = 'middle'; g.fillText(String(c.n), x, y + 1);
+  });
+  g.font = '15px sans-serif'; g.textAlign = 'right'; g.textBaseline = 'bottom'; const att = ok ? '© OpenStreetMap-Mitwirkende' : 'Kartenkacheln nicht verfügbar (offline) – Positionen ohne Hintergrundkarte';
+  g.fillStyle = 'rgba(255,255,255,.8)'; g.fillRect(W - g.measureText(att).width - 16, H - 24, g.measureText(att).width + 16, 24); g.fillStyle = '#334155'; g.fillText(att, W - 8, H - 4);
+  return { url: cv.toDataURL('image/jpeg', 0.85), ok: ok > 0, w: W, h: H };
+}
+async function buildDashboardPdf(rs) {
+  await loadJsPdf();
+  const { jsPDF } = window.jspdf, doc = new jsPDF({ unit: 'mm', format: 'a4' }), W = 210, H = 297, M = 14, CW = W - 2 * M, n = rs.length;
+  const GREEN = [16, 185, 129], INK = [15, 23, 42], MUTE = [100, 116, 139];
+  const chrono = rs.slice().sort((a, b) => a.timestamp.localeCompare(b.timestamp)), sum = rs.reduce((t, r) => t + (+r.fine || 0), 0);
+  const d0 = fmtD(Date.parse(chrono[0].timestamp)), d1 = fmtD(Date.parse(chrono[n - 1].timestamp));
+  let y = M;
+  const need = (h) => { if (y + h > H - M - 6) { doc.addPage(); y = M; } };
+  const tx = (t, x, size, bold, col, opt) => { doc.setFont('helvetica', bold ? 'bold' : 'normal'); doc.setFontSize(size); doc.setTextColor(...(col || INK)); doc.text(String(t), x, y, opt); };
+  const para = (t, x, w, size, bold, col) => { doc.setFont('helvetica', bold ? 'bold' : 'normal'); doc.setFontSize(size); doc.setTextColor(...(col || INK)); const ls = doc.splitTextToSize(String(t), w), lh = size * 0.42; ls.forEach((l, k) => doc.text(l, x, y + k * lh)); return ls.length * lh; };
+  const sec = (title, body = 30) => { need(16 + body); y += 5; tx(title, M, 12.5, true); y += 2; doc.setDrawColor(...GREEN); doc.setLineWidth(0.6); doc.line(M, y, W - M, y); doc.setLineWidth(0.2); y += 6; };
+  const hbar = (label, v, mx, col, right) => { need(10); tx(label.length > 58 ? label.slice(0, 57) + '…' : label, M, 9, false); tx(right, W - M, 9, false, MUTE, { align: 'right' }); y += 1.8; doc.setFillColor(226, 232, 240); doc.roundedRect(M, y, CW, 2.6, 1.3, 1.3, 'F'); doc.setFillColor(...col); doc.roundedRect(M, y, Math.max(2.6, CW * v / mx), 2.6, 1.3, 1.3, 'F'); y += 6.2; };
+  // Kopf
+  tx('ParkWatch Quartier – Auswertung', M, 18, true); y += 6.5;
+  y += para(`Auswahl: ${viewLabel()} · ${n} ${n === 1 ? 'Fall' : 'Fälle'} (${d0 === d1 ? d0 : d0 + ' – ' + d1}) · erstellt ${new Date().toLocaleDateString('de-DE')} · Kennzeichen anonymisiert`, M, CW, 9, false, MUTE) + 3;
+  // Hero
+  doc.setFillColor(236, 253, 245); doc.setDrawColor(...GREEN); doc.roundedRect(M, y, CW, 26, 3, 3, 'FD');
+  doc.setFont('helvetica', 'bold'); doc.setFontSize(34); doc.setTextColor(...INK); doc.text(String(n), M + 6, y + 15);
+  doc.setFontSize(9); doc.setFont('helvetica', 'normal'); doc.setTextColor(...MUTE); doc.text(n === 1 ? 'Fall' : 'Fälle', M + 6, y + 21);
+  doc.setFont('helvetica', 'bold'); doc.setFontSize(20); doc.setTextColor(5, 150, 105); doc.text(eur(sum), W - M - 6, y + 13, { align: 'right' });
+  doc.setFont('helvetica', 'normal'); doc.setFontSize(9); doc.setTextColor(...MUTE); doc.text(`Regelsätze gesamt · Ø ${eur(sum / n)} je Fall`, W - M - 6, y + 20, { align: 'right' }); y += 32;
+  // Kennzahlen
+  const narrow = rs.filter((r) => (r.restCm != null && r.restCm !== '' && r.restCm < NARROW_CM) || r.flags?.behinderung).length, school = rs.filter((r) => r.isSchoolRoute).length;
+  const rescue = rs.filter((r) => r.rescueRoute || r.flags?.rettung || r.group === 'feuerwehr' || r.group === 'enge').length, heavy = rs.filter((r) => ['LKW', 'Anhänger', 'Wohnmobil', 'Transporter'].includes(r.vehicleType)).length;
+  const rest = rs.filter((r) => r.restCm !== '' && r.restCm != null).map((r) => +r.restCm), avgRest = rest.length ? Math.round(rest.reduce((a, b) => a + b, 0) / rest.length) : null;
+  const pl = {}; rs.forEach((r) => { if (r.licensePlate) pl[r.licensePlate] = (pl[r.licensePlate] || 0) + 1; }); const repN = Object.values(pl).filter((c) => c >= 2).length;
+  const K = [['Fußgänger-Hindernis', pct(narrow, n) + ' %', `${narrow} Fälle (Behinderung/Engstelle)`, [225, 29, 72]], ['Schul-/Kitaweg', school, `${pct(school, n)} % der Fälle`, [217, 119, 6]], ['Rettungsweg', rescue, `${pct(rescue, n)} % der Fälle`, [234, 88, 12]],
+    ['Gewerbl./groß', heavy, 'LKW, Transporter, Anhänger …', [8, 145, 178]], ['Ø Restbreite', avgRest != null ? avgRest + ' cm' : '–', rest.length ? `aus ${rest.length} Angaben` : 'keine Angaben', [5, 150, 105]], ['Mehrfach erfasst', repN, 'Fahrzeuge mind. 2× (anonym gezählt)', [124, 58, 237]]];
+  const bw = (CW - 8) / 3; K.forEach((k, i) => { const bx = M + (i % 3) * (bw + 4), by = y + Math.floor(i / 3) * 24; doc.setDrawColor(203, 213, 225); doc.setFillColor(255, 255, 255); doc.roundedRect(bx, by, bw, 21, 2, 2, 'FD'); doc.setFillColor(...k[3]); doc.rect(bx, by + 1.5, 1.2, 18, 'F');
+    doc.setFont('helvetica', 'bold'); doc.setFontSize(7.5); doc.setTextColor(...MUTE); doc.text(k[0].toUpperCase(), bx + 4, by + 5); doc.setFontSize(16); doc.setTextColor(...k[3]); doc.text(String(k[1]), bx + 4, by + 12.5);
+    doc.setFont('helvetica', 'normal'); doc.setFontSize(7); doc.setTextColor(...MUTE); doc.text(doc.splitTextToSize(k[2], bw - 6), bx + 4, by + 17); }); y += 50;
+  // Kernaussagen
+  sec('Kernaussagen'); dashInsights(rs).forEach((t) => { need(10); doc.setFillColor(...GREEN); doc.circle(M + 1.5, y - 1.2, 0.9, 'F'); y += para(t, M + 5, CW - 5, 9.5, false) + 2.2; });
+  // Verlauf
+  const td = trendData(rs); sec(`Verlauf (${{ h: 'pro Stunde', d: 'pro Tag', w: 'pro Woche' }[td.unit]})`, 48);
+  { const ch = 34, bwid = CW / td.nb, gap = Math.min(1.2, bwid * 0.2); doc.setDrawColor(148, 163, 184); doc.line(M, y + ch, W - M, y + ch);
+    td.b.forEach((v, i) => { const h = v ? Math.max(1, v / td.mx * (ch - 6)) : 0; doc.setFillColor(...GREEN); if (h) doc.rect(M + i * bwid + gap / 2, y + ch - h, Math.max(0.8, bwid - gap), h, 'F'); if (v && td.nb <= 24) { doc.setFontSize(7); doc.setTextColor(...MUTE); doc.text(String(v), M + i * bwid + bwid / 2, y + ch - h - 1, { align: 'center' }); } });
+    doc.setFontSize(7.5); doc.setTextColor(...MUTE); doc.text(td.lab(0), M, y + ch + 4); if (td.nb > 1) doc.text(td.lab(td.nb - 1), W - M, y + ch + 4, { align: 'right' }); y += ch + 8; }
+  // Heatmap
+  sec('Wochentag × Tageszeit', 62);
+  { const g = dashHeat(rs), mx = Math.max(1, ...g.flat()), lw = 12, cw = (CW - lw) / 5, chh = 6.5; doc.setFontSize(7.5); doc.setTextColor(...MUTE);
+    TB.forEach((b, j) => doc.text(`${b[0]} ${b[1]}`, M + lw + j * cw + cw / 2, y, { align: 'center' })); y += 2;
+    g.forEach((row, i) => { doc.setTextColor(...MUTE); doc.setFontSize(8); doc.text(WD[i], M, y + chh * 0.68 + i * (chh + 1)); row.forEach((v, j) => { const t = v ? 0.2 + 0.8 * v / mx : 0, c = [236 - t * (236 - 16), 253 - t * (253 - 185), 245 - t * (245 - 129)]; doc.setFillColor(...(v ? c : [243, 244, 246])); doc.roundedRect(M + lw + j * cw + 0.5, y + i * (chh + 1), cw - 1, chh, 1, 1, 'F'); if (v) { doc.setFontSize(8.5); doc.setFont('helvetica', 'bold'); doc.setTextColor(t > 0.55 ? 255 : 15, t > 0.55 ? 255 : 23, t > 0.55 ? 255 : 42); doc.text(String(v), M + lw + j * cw + cw / 2, y + i * (chh + 1) + chh * 0.68, { align: 'center' }); doc.setFont('helvetica', 'normal'); } }); });
+    y += 7 * (chh + 1) + 2; }
+  // Hotspots
+  sec('Hotspots (Straßen)'); const rd = countBy(rs, roadOf), fineBy = {}; rs.forEach((r) => { const k = roadOf(r); fineBy[k] = (fineBy[k] || 0) + (+r.fine || 0); });
+  rd.slice(0, 10).forEach(([k, v]) => hbar(k, v, rd[0][1], GREEN, `${eur(fineBy[k])} · ${v} · ${pct(v, n)} %`));
+  // Karte
+  const cl = mapClusters(rs);
+  if (cl.length) { sec('Karte', CW * 520 / 1000 + 8); const mh = CW * 520 / 1000; need(mh + 10); try { const m = await staticMapImage(cl); doc.addImage(m.url, 'JPEG', M, y, CW, mh); doc.setDrawColor(203, 213, 225); doc.rect(M, y, CW, mh); y += mh + 4;
+      doc.setFontSize(8); doc.setTextColor(...MUTE); doc.setFillColor(225, 29, 72); doc.circle(M + 2, y - 1, 1.3, 'F'); doc.text('mit Behinderung / Schul- / Rettungsweg', M + 5, y); doc.setFillColor(5, 150, 105); doc.circle(M + 75, y - 1, 1.3, 'F'); doc.text('übrige Fälle · Zahl = Fälle am Standort (bis 20 m)', M + 78, y); y += 6; } catch (e) { console.warn('PDF-Karte', e); y += 2; } }
+  // Tatbestände
+  sec('Tatbestände'); const tb = {}; rs.forEach((r) => { const k = r.tbnr || '—'; (tb[k] = tb[k] || { t: r.tbnrDesc || '', n: 0, e: 0 }).n++; tb[k].e += +r.fine || 0; });
+  const tbl = Object.entries(tb).sort((a, b) => b[1].n - a[1].n); tbl.forEach(([k, v]) => hbar(`${k} · ${v.t}`, v.n, tbl[0][1].n, [217, 119, 6], `${eur(v.e)} · ${v.n} · ${pct(v.n, n)} %`));
+  // Fahrzeuge
+  sec('Fahrzeuge', 50); const ty = countBy(rs, (r) => r.vehicleType || '?'), br = countBy(rs, brandOf).slice(0, 6), co = countBy(rs, (r) => r.vehicleColor), cmap = Object.fromEntries(VEHICLE_COLORS);
+  const pal = [[16, 185, 129], [8, 145, 178], [124, 58, 237], [217, 119, 6], [225, 29, 72], [100, 116, 139]]; need(24);
+  { let x = M; ty.forEach(([k, v], i) => { const w = CW * v / n; doc.setFillColor(...pal[i % 6]); doc.rect(x, y, w, 5, 'F'); x += w; }); y += 10; let lx = M; doc.setFontSize(8.5); ty.forEach(([k, v], i) => { const t = `${k} ${v}`, w = doc.getTextWidth(t) + 8; if (lx + w > W - M) { lx = M; y += 5; } doc.setFillColor(...pal[i % 6]); doc.circle(lx + 1.3, y - 1, 1.3, 'F'); doc.setTextColor(...INK); doc.text(t, lx + 4, y); lx += w + 3; }); y += 7; }
+  br.forEach(([k, v]) => hbar(k, v, br[0][1], [124, 58, 237], `${v} · ${pct(v, n)} %`));
+  if (co.length) { need(10); let lx = M; doc.setFontSize(8.5); co.forEach(([k, v]) => { const t = `${k} ${v}`, w = doc.getTextWidth(t) + 8; if (lx + w > W - M) { lx = M; y += 5; } const hx = (cmap[k] || '#64748b').replace('#', ''), c = [0, 2, 4].map((o) => parseInt(hx.substr(o, 2), 16)); doc.setFillColor(...c); doc.setDrawColor(100, 116, 139); doc.circle(lx + 1.5, y - 1, 1.5, 'FD'); doc.setTextColor(...INK); doc.text(t, lx + 4.5, y); lx += w + 3; }); y += 6; }
+  // Falltabelle
+  need(40); y += 6; tx(`Erfasste Fälle (${n}) – ${viewLabel()} · ${SORTS[S.view.sort]}`, M, 12, true); y += 6;
+  const cols = [['Nr', M, 8], ['Datum / Zeit', M + 8, 28], ['Ort', M + 36, 52], ['TBNR · Tatbestand', M + 88, 62], ['€', W - M, 0]];
+  const head = () => { doc.setFillColor(241, 245, 249); doc.rect(M, y - 4, CW, 6, 'F'); doc.setFont('helvetica', 'bold'); doc.setFontSize(8); doc.setTextColor(...MUTE); cols.forEach(([t, x], i) => doc.text(t, x + (i === 4 ? 0 : 1), y, i === 4 ? { align: 'right' } : undefined)); y += 5; };
+  head();
+  rs.forEach((r, i) => {
+    doc.setFont('helvetica', 'normal'); doc.setFontSize(8);
+    const a = doc.splitTextToSize(r.address || roadOf(r), 50), b = doc.splitTextToSize(`${r.tbnr} · ${r.tbnrDesc || ''}`, 60), c = doc.splitTextToSize([r.vehicleModel, r.vehicleColor].filter(Boolean).join(' · '), 60), hh = Math.max(a.length, b.length + c.length, 1) * 3.4 + 2.2;
+    if (y + hh > H - M - 6) { doc.addPage(); y = M; head(); }
+    doc.setFont('helvetica', 'normal'); doc.setFontSize(8); doc.setTextColor(...INK); doc.text(String(i + 1), M + 1, y); doc.text(fmtDT(Date.parse(r.timestamp)), M + 9, y); doc.text(a, M + 37, y); doc.text(b, M + 89, y); doc.setTextColor(...MUTE); doc.text(c, M + 89, y + b.length * 3.4); doc.setTextColor(...INK); doc.text(`${r.fine} €`, W - M, y, { align: 'right' });
+    y += hh; doc.setDrawColor(226, 232, 240); doc.line(M, y - 3.8, W - M, y - 3.8);
+  });
+  need(14); y += 3; para('Hinweis: Die App ist eine private Dokumentationshilfe. Tatbestände und Beträge sind Orientierungswerte; die Bewertung obliegt den zuständigen Behörden.', M, CW, 8, false, MUTE);
+  const pages = doc.getNumberOfPages(); for (let p = 1; p <= pages; p++) { doc.setPage(p); doc.setFontSize(8); doc.setTextColor(120); doc.text(`ParkWatch Quartier · Auswertung · Seite ${p}/${pages}`, W / 2, H - 7, { align: 'center' }); }
+  return doc.output('blob');
+}
+async function dashboardPdf() {
+  const rs = reportRecords(); if (!rs.length) return toast('In dieser Auswahl gibt es keine Fälle');
+  toast('Auswertung wird erstellt …', 3000);
+  try { const blob = await buildDashboardPdf(rs); if (await shareOrDownload(`ParkWatch_Auswertung_${new Date().toISOString().slice(0, 10)}.pdf`, blob)) toast('Auswertung als PDF erstellt', 4000); }
+  catch (e) { console.warn(e); toast('PDF fehlgeschlagen: ' + e.message, 5000); }
 }
 async function printReport() {
   if (!S.records.length) return toast('Keine Fälle vorhanden');
@@ -1428,7 +1548,7 @@ async function init() {
 
   $('btnSave').onclick = save; $('btnNew').onclick = () => { if (S.dirty && !S.savedId && (S.cur.photos.length || S.cur.plate) && !confirm('Ungespeicherten Fall verwerfen?')) return; newCase(); };
   $('tabCapture').onclick = () => switchTab('capture'); $('tabStats').onclick = () => switchTab('stats');
-  $('btnPrint').onclick = printReport;
+  $('btnPrint').onclick = printReport; $('btnDashPdf').onclick = dashboardPdf;
   const reDash = () => { renderDashboard(S.records); renderRecordList(); };
   $('dash').addEventListener('click', (e) => {
     const m = e.target.closest('[data-mode]'), st = e.target.closest('[data-step]'), q = e.target.closest('[data-road]');
