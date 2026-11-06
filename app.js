@@ -1,5 +1,5 @@
 /* ParkWatch Quartier v2.0 – Anwendungslogik (offline-first, keine Build-Abhängigkeit zur Laufzeit) */
-const APP_VERSION = "2.10.0";
+const APP_VERSION = "2.10.1";
 'use strict';
 
 const $ = (id) => document.getElementById(id);
@@ -685,14 +685,17 @@ async function aiRecognize(silent = false) {
     const res = await fetch('https://api.anthropic.com/v1/messages', {
       method: 'POST',
       headers: { 'content-type': 'application/json', 'x-api-key': s.aiKey, 'anthropic-version': '2023-06-01', 'anthropic-dangerous-direct-browser-access': 'true' },
-      body: JSON.stringify({ model: s.aiModel || 'claude-sonnet-5-5', max_tokens: 300, messages: [{ role: 'user', content: [
+      body: JSON.stringify({ model: s.aiModel || 'claude-sonnet-5-5', max_tokens: 400, messages: [{ role: 'user', content: [
         { type: 'image', source: { type: 'base64', media_type: 'image/jpeg', data: b64 } },
-        { type: 'text', text: 'Bestimme das am deutlichsten sichtbare, geparkte Fahrzeug. Antworte NUR mit JSON: {"marke":"","modell":"","klasse":"PKW|Transporter|LKW|Anhänger|Wohnmobil|Zweirad","farbe":"Weiß|Schwarz|Grau/Silber|Blau|Rot|Grün|Gelb/Orange|Braun/Beige","sicherheit":"hoch|mittel|niedrig"}. Unbekanntes als leeren String.' }
+        { type: 'text', text: 'Bestimme das am deutlichsten sichtbare, geparkte Fahrzeug. Antworte NUR mit JSON: {"marke":"","modell":"","klasse":"PKW|Transporter|LKW|Anhänger|Wohnmobil|Zweirad","farbe":"Weiß|Schwarz|Grau/Silber|Blau|Rot|Grün|Gelb/Orange|Braun/Beige","sicherheit":"hoch|mittel|niedrig"}. Unbekanntes als leeren String. Wenn du kein Fahrzeug oder nichts erkennst (z. B. dunkel, zu weit weg), gib trotzdem dieses JSON mit leeren Strings zurück – niemals Fließtext.' }
       ] }] })
     });
     if (!res.ok) { let m = ''; try { m = (await res.json()).error?.message || ''; } catch (e) { /* kein JSON */ } throw new Error('HTTP ' + res.status + (m ? ': ' + m.slice(0, 90) : '')); }
-    const txt = (await res.json()).content?.map((x) => x.text || '').join('') || '';
-    const j = JSON.parse(txt.match(/\{[\s\S]*\}/)[0]); const c = S.cur;
+    const data = await res.json(), txt = data.content?.map((x) => x.text || '').join('') || '';
+    let j = null; try { const m = txt.match(/\{[\s\S]*\}/); j = m ? JSON.parse(m[0]) : null; } catch (e) { j = null; }
+    if (!j) { if (!silent) toast(data.stop_reason === 'refusal' ? 'KI hat das Foto abgelehnt – bitte Fahrzeug manuell wählen' : `KI konnte auf dem Foto nichts erkennen${txt ? ': „' + txt.replace(/\s+/g, ' ').slice(0, 70) + '“' : ''} – bitte manuell wählen`, 5000); return; }
+    if (!j.marke && !j.modell && !j.klasse && !j.farbe) { if (!silent) toast('KI konnte kein Fahrzeug erkennen (zu dunkel oder zu weit weg?) – bitte manuell wählen', 5000); return; }
+    const c = S.cur;
     const brandKey = Object.keys(BRANDS).find((n) => n.toLowerCase() === String(j.marke || '').toLowerCase()) || j.marke || '';
     if (brandKey && !c.manual.brand) c.brand = brandKey;
     if (j.modell && !c.manual.model) c.model = j.modell;
